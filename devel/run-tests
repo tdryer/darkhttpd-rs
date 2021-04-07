@@ -17,6 +17,8 @@ if [[ -z "$CLANG" ]]; then
   CLANG="$(which clang)"
 fi
 
+RUST_LIB="../target/debug/libdarkhttpd.a -lpthread -ldl"
+
 runtests() {
   if [ -e $DIR ]; then
     rm -rf $DIR || exit 1
@@ -127,10 +129,13 @@ runtests() {
 
 # --- main ---
 
+# Build Rust library ahead of time.
+cargo build || exit 1
+
 # Unit test.
 echo "===> test_make_safe_uri"
 $CC -g -O2 -fsanitize=address -fsanitize=undefined \
-  test_make_safe_uri.c -o test_make_safe_uri || exit 1
+  test_make_safe_uri.c $RUST_LIB -o test_make_safe_uri || exit 1
 if ./test_make_safe_uri | egrep '^FAIL:'; then
   echo test_make_safe_uri failed >&2
   exit 1
@@ -138,9 +143,9 @@ fi
 
 # Check that the code builds with various defines.
 echo "===> building without -DDEBUG"
-$CC -O2 -Wall ../darkhttpd.c || exit 1
+$CC -O2 -Wall ../darkhttpd.c $RUST_LIB || exit 1
 echo "===> building with -DNO_IPV6"
-$CC -O2 -Wall -DNO_IPV6 ../darkhttpd.c || exit 1
+$CC -O2 -Wall -DNO_IPV6 ../darkhttpd.c $RUST_LIB || exit 1
 
 # Do coverage and sanitizers.
 # In the case of an error being found:
@@ -155,7 +160,7 @@ if ! $CLANG -v 2>/dev/null; then
 else
   echo "===> building a.out for msan"
   $CLANG -g -O2 -fsanitize=memory -DDEBUG -DAPBUF_INIT=1 \
-    ../darkhttpd.c || exit 1
+    ../darkhttpd.c $RUST_LIB || exit 1
   (runtests) || {
     echo "FAILED! stderr was:"
     echo "---"
@@ -169,7 +174,7 @@ fi
 echo "===> building a.out and darkhttpd.gcno for coverage + asan + ubsan"
 $CC -g -O2 -fprofile-arcs -ftest-coverage -fsanitize=address \
   -fsanitize=undefined -fno-omit-frame-pointer -DDEBUG -DAPBUF_INIT=1 \
-  ../darkhttpd.c || exit 1
+  ../darkhttpd.c $RUST_LIB || exit 1
 (export ASAN_OPTIONS=detect_leaks=1; runtests) || {
   echo "FAILED! stderr was:"
   echo "---"
