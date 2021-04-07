@@ -1,1 +1,8 @@
 darkhttpd
+__pycache__
+devel/test.out.log
+devel/test.out.stderr
+devel/test.out.stdout
+devel/test_make_safe_uri
+/target
+Cargo.lock

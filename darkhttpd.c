@@ -354,12 +354,7 @@ static void xclose(const int fd) {
 }
 
 /* malloc that dies if it can't allocate. */
-static void *xmalloc(const size_t size) {
-    void *ptr = malloc(size);
-    if (ptr == NULL)
-        errx(1, "can't allocate %zu bytes", size);
-    return ptr;
-}
+extern void *xmalloc(const size_t size);
 
 /* realloc() that dies if it can't reallocate. */
 static void *xrealloc(void *original, const size_t size) {
