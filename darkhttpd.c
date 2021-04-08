@@ -475,18 +475,7 @@ static void nonblock_socket(const int sock) {
 }
 
 /* Split string out of src with range [left:right-1] */
-static char *split_string(const char *src,
-        const size_t left, const size_t right) {
-    char *dest;
-    assert(left <= right);
-    assert(left < strlen(src));   /* [left means must be smaller */
-    assert(right <= strlen(src)); /* right) means can be equal or smaller */
-
-    dest = xmalloc(right - left + 1);
-    memcpy(dest, src+left, right-left);
-    dest[right-left] = '\0';
-    return dest;
-}
+extern char *split_string(const char *src, const size_t left, const size_t right);
 
 /* Resolve /./ and /../ in a URL, in-place.
  * Returns NULL if the URL is invalid/unsafe, or the original buffer if
