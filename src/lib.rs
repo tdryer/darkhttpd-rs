@@ -1,3 +1,5 @@
+use std::slice;
+
 /// Prints message to standard error and exits with code 1.
 macro_rules! abort {
     ($($arg:tt)*) => ({
@@ -28,13 +30,10 @@ pub unsafe extern "C" fn split_string(
     assert!(left < libc::strlen(src)); // [left means must be smaller
     assert!(right <= libc::strlen(src)); // right) means can be equal or smaller
 
-    let dest = xmalloc(right - left + 1);
-    libc::memcpy(
-        dest,
-        src.offset(left as isize) as *const libc::c_void,
-        right - left,
-    );
-    let dest_slice = std::slice::from_raw_parts_mut(dest as *mut libc::c_char, right - left + 1);
-    dest_slice[right - left] = 0;
-    dest as *mut libc::c_char
+    let src = slice::from_raw_parts(src, right);
+    let dest_len = right - left + 1;
+    let dest = slice::from_raw_parts_mut(xmalloc(dest_len) as *mut libc::c_char, dest_len);
+    dest[..right - left].copy_from_slice(&src[left..]);
+    dest[dest_len - 1] = 0;
+    dest.as_mut_ptr()
 }
