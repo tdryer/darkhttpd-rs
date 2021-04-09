@@ -481,59 +481,7 @@ extern char *split_string(const char *src, const size_t left, const size_t right
  * Returns NULL if the URL is invalid/unsafe, or the original buffer if
  * successful.
  */
-static char *make_safe_url(char *const url) {
-    char *src = url, *dst;
-    #define ends(c) ((c) == '/' || (c) == '\0')
-
-    /* URLs not starting with a slash are illegal. */
-    if (*src != '/')
-        return NULL;
-
-    /* Fast case: skip until first double-slash or dot-dir. */
-    for ( ; *src; ++src) {
-        if (*src == '/') {
-            if (src[1] == '/')
-                break;
-            else if (src[1] == '.') {
-                if (ends(src[2]))
-                    break;
-                else if (src[2] == '.' && ends(src[3]))
-                    break;
-            }
-        }
-    }
-
-    /* Copy to dst, while collapsing multi-slashes and handling dot-dirs. */
-    dst = src;
-    while (*src) {
-        if (*src != '/')
-            *dst++ = *src++;
-        else if (*++src == '/')
-            ;
-        else if (*src != '.')
-            *dst++ = '/';
-        else if (ends(src[1]))
-            /* Ignore single-dot component. */
-            ++src;
-        else if (src[1] == '.' && ends(src[2])) {
-            /* Double-dot component. */
-            src += 2;
-            if (dst == url)
-                return NULL; /* Illegal URL */
-            else
-                /* Backtrack to previous slash. */
-                while (*--dst != '/' && dst > url);
-        }
-        else
-            *dst++ = '/';
-    }
-
-    if (dst == url)
-        ++dst;
-    *dst = '\0';
-    return url;
-    #undef ends
-}
+extern char *make_safe_url(char *const url);
 
 static void add_forward_mapping(const char * const host,
                                 const char * const target_url) {
