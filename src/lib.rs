@@ -51,10 +51,7 @@ const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
 #[no_mangle]
 pub extern "C" fn parse_default_extension_map() {
     for line in DEFAULT_EXTENSIONS_MAP {
-        let mut line = line.as_bytes().to_vec();
-        line.push(0);
-        // TODO: from_vec_unchecked null-terminates the string for us
-        let line = unsafe { CString::from_vec_unchecked(line) };
+        let line = unsafe { CString::from_vec_unchecked(line.as_bytes().to_vec()) };
         parse_mimetype_line(line.as_ptr());
     }
 }
@@ -116,11 +113,7 @@ pub extern "C" fn parse_mimetype_line(line: *const libc::c_char) {
         .to_bytes()
         .split(|&b| b == b' ' || b == b'\t')
         .filter(|slice| slice.len() > 0)
-        .map(|field| {
-            let mut field = field.to_vec();
-            field.push(0);
-            unsafe { CString::from_vec_unchecked(field) }
-        });
+        .map(|field| unsafe { CString::from_vec_unchecked(field.to_vec()) });
     let mimetype = match fields.next() {
         Some(mimetype) => mimetype,
         None => return, // empty line
