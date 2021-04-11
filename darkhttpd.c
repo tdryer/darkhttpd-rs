@@ -306,31 +306,6 @@ static volatile int running = 1; /* signal handler sets this to false */
 static uid_t drop_uid = INVALID_UID;
 static gid_t drop_gid = INVALID_GID;
 
-/* Default mimetype mappings - make sure this array is NULL terminated. */
-static const char *default_extension_map[] = {
-    "application/ogg"      " ogg",
-    "application/pdf"      " pdf",
-    "application/wasm"     " wasm",
-    "application/xml"      " xsl xml",
-    "application/xml-dtd"  " dtd",
-    "application/xslt+xml" " xslt",
-    "application/zip"      " zip",
-    "audio/mpeg"           " mp2 mp3 mpga",
-    "image/gif"            " gif",
-    "image/jpeg"           " jpeg jpe jpg",
-    "image/png"            " png",
-    "image/svg+xml"        " svg",
-    "text/css"             " css",
-    "text/html"            " html htm",
-    "text/javascript"      " js",
-    "text/plain"           " txt asc",
-    "video/mpeg"           " mpeg mpe mpg",
-    "video/quicktime"      " qt mov",
-    "video/x-msvideo"      " avi",
-    "video/mp4"            " mp4",
-    NULL
-};
-
 static const char octet_stream[] = "application/octet-stream";
 static const char *default_mimetype = octet_stream;
 
@@ -500,12 +475,7 @@ extern void parse_mimetype_line(const char *line);
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.
  */
-static void parse_default_extension_map(void) {
-    size_t i;
-
-    for (i = 0; default_extension_map[i] != NULL; i++)
-        parse_mimetype_line(default_extension_map[i]);
-}
+extern void parse_default_extension_map(void);
 
 /* read a line from fp, return its contents in a dynamically allocated buffer,
  * not including the line ending.

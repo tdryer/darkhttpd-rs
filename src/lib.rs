@@ -11,6 +11,41 @@ static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
     Mutex::new(mime_map)
 });
 
+const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
+    "application/ogg         ogg",
+    "application/pdf         pdf",
+    "application/wasm        wasm",
+    "application/xml         xsl xml",
+    "application/xml-dtd     dtd",
+    "application/xslt+xml    xslt",
+    "application/zip         zip",
+    "audio/mpeg              mp2 mp3 mpga",
+    "image/gif               gif",
+    "image/jpeg              jpeg jpe jpg",
+    "image/png               png",
+    "image/svg+xml           svg",
+    "text/css                css",
+    "text/html               html htm",
+    "text/javascript         js",
+    "text/plain              txt asc",
+    "video/mpeg              mpeg mpe mpg",
+    "video/quicktime         qt mov",
+    "video/x-msvideo         avi",
+    "video/mp4               mp4",
+];
+
+/// Adds contents of DEFAULT_EXTENSIONS_MAP to mime_map.
+#[no_mangle]
+pub extern "C" fn parse_default_extension_map() {
+    for line in DEFAULT_EXTENSIONS_MAP {
+        // TODO: Add function to convert from &str to CString?
+        let mut line = line.as_bytes().to_vec();
+        line.push(0);
+        let line = unsafe { CString::from_vec_unchecked(line) };
+        parse_mimetype_line(line.as_ptr());
+    }
+}
+
 /// Associates an extension with a mimetype in the mime_map. Entries are in unsorted order. Makes
 /// copies of extension and mimetype strings.
 #[no_mangle]
