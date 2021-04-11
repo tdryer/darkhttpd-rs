@@ -459,18 +459,10 @@ static void add_forward_mapping(const char * const host,
     forward_map[forward_map_size - 1].target_url = target_url;
 }
 
-/* Associates an extension with a mimetype in the mime_map.  Entries are in
- * unsorted order.  Makes copies of extension and mimetype strings.
- */
-extern void add_mime_mapping(const char *extension, const char *mimetype);
-
 /*
  * Retrieves a mimetype from the mime_map.
  */
 extern const char *get_mimetype(const char *extension);
-
-/* Parses a mime.types line and adds the parsed data to the mime_map. */
-extern void parse_mimetype_line(const char *line);
 
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.

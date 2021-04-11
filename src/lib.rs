@@ -52,7 +52,7 @@ const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
 pub extern "C" fn parse_default_extension_map() {
     for line in DEFAULT_EXTENSIONS_MAP {
         let line = unsafe { CString::from_vec_unchecked(line.as_bytes().to_vec()) };
-        parse_mimetype_line(line.as_ptr());
+        add_mimetype_line(&line);
     }
 }
 
@@ -67,26 +67,8 @@ pub extern "C" fn parse_extension_map_file(filename: *const libc::c_char) {
         let line =
             line.unwrap_or_else(|e| abort!("failed to read {}: {}", filename.to_string_lossy(), e));
         let line = unsafe { CString::from_vec_unchecked(line.into_bytes()) };
-        parse_mimetype_line(line.as_ptr());
+        add_mimetype_line(&line);
     }
-}
-
-/// Associates an extension with a mimetype in the mime_map. Entries are in unsorted order. Makes
-/// copies of extension and mimetype strings.
-#[no_mangle]
-pub extern "C" fn add_mime_mapping(extension: *const libc::c_char, mimetype: *const libc::c_char) {
-    assert!(!extension.is_null());
-    let extension =
-        unsafe { CString::from_vec_unchecked(CStr::from_ptr(extension).to_bytes().to_vec()) };
-    assert!(extension.to_bytes().len() > 0);
-    assert!(!mimetype.is_null());
-    let mimetype =
-        unsafe { CString::from_vec_unchecked(CStr::from_ptr(mimetype).to_bytes().to_vec()) };
-    assert!(mimetype.to_bytes().len() > 0);
-    MIME_MAP
-        .lock()
-        .expect("failed to lock MIME_MAP")
-        .insert(extension, mimetype);
 }
 
 /// Retrieves a mimetype from the mime_map.
@@ -104,11 +86,8 @@ pub extern "C" fn get_mimetype(extension: *const libc::c_char) -> *const libc::c
     }
 }
 
-/// Parses a mime.types line and adds the parsed data to the mime_map.
-#[no_mangle]
-pub extern "C" fn parse_mimetype_line(line: *const libc::c_char) {
-    assert!(!line.is_null());
-    let line = unsafe { CStr::from_ptr(line) };
+/// Parses a mimetype line and adds the parsed data to MIME_MAP.
+fn add_mimetype_line(line: &CStr) {
     let mut fields = line
         .to_bytes()
         .split(|&b| b == b' ' || b == b'\t')
@@ -124,7 +103,10 @@ pub extern "C" fn parse_mimetype_line(line: *const libc::c_char) {
     for extension in fields {
         assert!(mimetype.as_bytes().len() > 1);
         assert!(extension.as_bytes().len() > 1);
-        add_mime_mapping(extension.as_c_str().as_ptr(), mimetype.as_c_str().as_ptr());
+        MIME_MAP
+            .lock()
+            .expect("failed to lock MIME_MAP")
+            .insert(extension, mimetype.clone());
     }
 }
 
