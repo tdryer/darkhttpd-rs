@@ -1561,19 +1561,7 @@ static void cleanup_sorted_dirlist(struct dlent **list, const ssize_t size) {
 /* Is this an unreserved character according to
  * https://tools.ietf.org/html/rfc3986#section-2.3
  */
-static int is_unreserved(const unsigned char c) {
-    if (c >= 'a' && c <= 'z') return 1;
-    if (c >= 'A' && c <= 'Z') return 1;
-    if (c >= '0' && c <= '9') return 1;
-    switch (c) {
-        case '-':
-        case '.':
-        case '_':
-        case '~':
-            return 1;
-    }
-    return 0;
-}
+extern int is_unreserved(const unsigned char c);
 
 /* Encode string to be an RFC3986-compliant URL part.
  * Contributed by nf.

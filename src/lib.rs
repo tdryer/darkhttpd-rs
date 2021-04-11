@@ -200,3 +200,9 @@ pub extern "C" fn make_safe_url(url: *mut libc::c_char) -> *mut libc::c_char {
 
     url.as_mut_ptr()
 }
+
+/// Is this an rfc3986 "unreserved character"?
+#[no_mangle]
+pub extern "C" fn is_unreserved(c: libc::c_uchar) -> libc::c_int {
+    (c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~')) as libc::c_int
+}
