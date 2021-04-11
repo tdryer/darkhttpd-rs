@@ -260,14 +260,6 @@ static struct forward_mapping *forward_map = NULL;
 static size_t forward_map_size = 0;
 static const char *forward_all_url = NULL;
 
-struct mime_mapping {
-    char *extension, *mimetype;
-};
-
-static struct mime_mapping *mime_map = NULL;
-static size_t mime_map_size = 0;
-static size_t longest_ext = 0;
-
 /* If a connection is idle for timeout_secs or more, it gets closed and
  * removed from the connlist.
  */
@@ -495,44 +487,12 @@ static void add_forward_mapping(const char * const host,
 /* Associates an extension with a mimetype in the mime_map.  Entries are in
  * unsorted order.  Makes copies of extension and mimetype strings.
  */
-static void add_mime_mapping(const char *extension, const char *mimetype) {
-    size_t i;
-    assert(strlen(extension) > 0);
-    assert(strlen(mimetype) > 0);
+extern void add_mime_mapping(const char *extension, const char *mimetype);
 
-    /* update longest_ext */
-    i = strlen(extension);
-    if (i > longest_ext)
-        longest_ext = i;
-
-    /* look through list and replace an existing entry if possible */
-    for (i = 0; i < mime_map_size; i++)
-        if (strcmp(mime_map[i].extension, extension) == 0) {
-            free(mime_map[i].mimetype);
-            mime_map[i].mimetype = xstrdup(mimetype);
-            return;
-        }
-
-    /* no replacement - add a new entry */
-    mime_map_size++;
-    mime_map = xrealloc(mime_map,
-        sizeof(struct mime_mapping) * mime_map_size);
-    mime_map[mime_map_size - 1].extension = xstrdup(extension);
-    mime_map[mime_map_size - 1].mimetype = xstrdup(mimetype);
-}
-
-/* qsort() the mime_map.  The map must be sorted before it can be
- * binary-searched.
+/*
+ * Retrieves a mimetype from the mime_map.
  */
-static int mime_mapping_cmp(const void *a, const void *b) {
-    return strcmp(((const struct mime_mapping *)a)->extension,
-                  ((const struct mime_mapping *)b)->extension);
-}
-
-static void sort_mime_map(void) {
-    qsort(mime_map, mime_map_size, sizeof(struct mime_mapping),
-        mime_mapping_cmp);
-}
+extern const char *get_mimetype(const char *extension);
 
 /* Parses a mime.types line and adds the parsed data to the mime_map. */
 static void parse_mimetype_line(const char *line) {
@@ -667,16 +627,11 @@ static void parse_extension_map_file(const char *filename) {
     fclose(fp);
 }
 
-/* Uses the mime_map to determine a Content-Type: for a requested URL.  This
- * bsearch()es mime_map, so make sure it's sorted first.
- */
-static int mime_mapping_cmp_str(const void *a, const void *b) {
-    return strcmp((const char *)a,
-                 ((const struct mime_mapping *)b)->extension);
-}
-
 static const char *url_content_type(const char *url) {
     int period, urllen = (int)strlen(url);
+
+    // TODO(tdryer): Either compute this, or remove it.
+    size_t longest_ext = 255;
 
     for (period = urllen - 1;
          (period > 0) && (url[period] != '.') &&
@@ -685,12 +640,10 @@ static const char *url_content_type(const char *url) {
             ;
 
     if ((period >= 0) && (url[period] == '.')) {
-        struct mime_mapping *result =
-            bsearch((url + period + 1), mime_map, mime_map_size,
-                    sizeof(struct mime_mapping), mime_mapping_cmp_str);
-        if (result != NULL) {
-            assert(strcmp(url + period + 1, result->extension) == 0);
-            return result->mimetype;
+        const char *mimetype = get_mimetype(url + period + 1);
+        if (mimetype != NULL) {
+            printf("got mimetype: %s", mimetype);
+            return mimetype;
         }
     }
     /* else no period found in the string */
@@ -2668,10 +2621,6 @@ int main(int argc, char **argv) {
     printf("%s, %s.\n", pkgname, copyright);
     parse_default_extension_map();
     parse_commandline(argc, argv);
-    /* parse_commandline() might override parts of the extension map by
-     * parsing a user-specified file.
-     */
-    sort_mime_map();
     xasprintf(&keep_alive_field, "Keep-Alive: timeout=%d\r\n", timeout_secs);
     if (want_server_id)
         xasprintf(&server_hdr, "Server: %s\r\n", pkgname);
@@ -2750,12 +2699,6 @@ int main(int argc, char **argv) {
 
     /* free the mallocs */
     {
-        size_t i;
-        for (i=0; i<mime_map_size; i++) {
-            free(mime_map[i].extension);
-            free(mime_map[i].mimetype);
-        }
-        free(mime_map);
         if (forward_map)
             free(forward_map);
         free(keep_alive_field);

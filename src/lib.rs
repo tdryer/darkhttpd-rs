@@ -1,4 +1,48 @@
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
 use std::slice;
+use std::sync::Mutex;
+
+use once_cell::sync::Lazy;
+
+// TODO: Remove this global when we can propagate it instead.
+static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
+    let mime_map = HashMap::new();
+    Mutex::new(mime_map)
+});
+
+/// Associates an extension with a mimetype in the mime_map. Entries are in unsorted order. Makes
+/// copies of extension and mimetype strings.
+#[no_mangle]
+pub extern "C" fn add_mime_mapping(extension: *const libc::c_char, mimetype: *const libc::c_char) {
+    assert!(!extension.is_null());
+    let extension =
+        unsafe { CString::from_vec_unchecked(CStr::from_ptr(extension).to_bytes().to_vec()) };
+    assert!(extension.to_bytes().len() > 0);
+    assert!(!mimetype.is_null());
+    let mimetype =
+        unsafe { CString::from_vec_unchecked(CStr::from_ptr(mimetype).to_bytes().to_vec()) };
+    assert!(mimetype.to_bytes().len() > 0);
+    MIME_MAP
+        .lock()
+        .expect("failed to lock MIME_MAP")
+        .insert(extension, mimetype);
+}
+
+/// Retrieves a mimetype from the mime_map.
+#[no_mangle]
+pub extern "C" fn get_mimetype(extension: *const libc::c_char) -> *const libc::c_char {
+    assert!(!extension.is_null());
+    let extension = unsafe { CStr::from_ptr(extension) };
+    match MIME_MAP
+        .lock()
+        .expect("failed to lock MIME_MAP")
+        .get(extension)
+    {
+        Some(mimetype) => mimetype.as_ptr(),
+        None => std::ptr::null(),
+    }
+}
 
 /// Prints message to standard error and exits with code 1.
 macro_rules! abort {
