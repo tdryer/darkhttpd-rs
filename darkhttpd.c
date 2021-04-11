@@ -477,78 +477,10 @@ extern void parse_mimetype_line(const char *line);
  */
 extern void parse_default_extension_map(void);
 
-/* read a line from fp, return its contents in a dynamically allocated buffer,
- * not including the line ending.
- *
- * Handles CR, CRLF and LF line endings, as well as NOEOL correctly.  If
- * already at EOF, returns NULL.  Will err() or errx() in case of
- * unexpected file error or running out of memory.
- */
-static char *read_line(FILE *fp) {
-    char *buf;
-    long startpos, endpos;
-    size_t linelen, numread;
-    int c;
-
-    startpos = ftell(fp);
-    if (startpos == -1)
-        err(1, "ftell()");
-
-    /* find end of line (or file) */
-    linelen = 0;
-    for (;;) {
-        c = fgetc(fp);
-        if ((c == EOF) || (c == (int)'\n') || (c == (int)'\r'))
-            break;
-        linelen++;
-    }
-
-    /* return NULL on EOF (and empty line) */
-    if (linelen == 0 && c == EOF)
-        return NULL;
-
-    endpos = ftell(fp);
-    if (endpos == -1)
-        err(1, "ftell()");
-
-    /* skip CRLF */
-    if ((c == (int)'\r') && (fgetc(fp) == (int)'\n'))
-        endpos++;
-
-    buf = xmalloc(linelen + 1);
-
-    /* rewind file to where the line stared and load the line */
-    if (fseek(fp, startpos, SEEK_SET) == -1)
-        err(1, "fseek()");
-    numread = fread(buf, 1, linelen, fp);
-    if (numread != linelen)
-        errx(1, "fread() %zu bytes, expecting %zu bytes", numread, linelen);
-
-    /* terminate buffer */
-    buf[linelen] = 0;
-
-    /* advance file pointer over the endline */
-    if (fseek(fp, endpos, SEEK_SET) == -1)
-        err(1, "fseek()");
-
-    return buf;
-}
-
 /* ---------------------------------------------------------------------------
  * Adds contents of specified file to mime_map list.
  */
-static void parse_extension_map_file(const char *filename) {
-    char *buf;
-    FILE *fp = fopen(filename, "rb");
-
-    if (fp == NULL)
-        err(1, "fopen(\"%s\")", filename);
-    while ((buf = read_line(fp)) != NULL) {
-        parse_mimetype_line(buf);
-        free(buf);
-    }
-    fclose(fp);
-}
+extern void parse_extension_map_file(const char *filename);
 
 static const char *url_content_type(const char *url) {
     int period, urllen = (int)strlen(url);

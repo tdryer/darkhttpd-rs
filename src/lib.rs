@@ -1,9 +1,22 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::ffi::{CStr, CString};
+use std::fs::File;
+use std::io::BufRead;
+use std::os::unix::ffi::OsStrExt;
 use std::slice;
 use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
+
+/// Prints message to standard error and exits with code 1.
+macro_rules! abort {
+    ($($arg:tt)*) => ({
+        eprint!("{}: ", env!("CARGO_PKG_NAME"));
+        eprintln!($($arg)*);
+        std::process::exit(1);
+    })
+}
 
 // TODO: Remove this global when we can propagate it instead.
 static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
@@ -38,10 +51,25 @@ const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
 #[no_mangle]
 pub extern "C" fn parse_default_extension_map() {
     for line in DEFAULT_EXTENSIONS_MAP {
-        // TODO: Add function to convert from &str to CString?
         let mut line = line.as_bytes().to_vec();
         line.push(0);
+        // TODO: from_vec_unchecked null-terminates the string for us
         let line = unsafe { CString::from_vec_unchecked(line) };
+        parse_mimetype_line(line.as_ptr());
+    }
+}
+
+/// Adds contents of specified file to mime_map list.
+#[no_mangle]
+pub extern "C" fn parse_extension_map_file(filename: *const libc::c_char) {
+    assert!(!filename.is_null());
+    let filename = unsafe { CStr::from_ptr(filename) };
+    let file = File::open(OsStr::from_bytes(filename.to_bytes()))
+        .unwrap_or_else(|e| abort!("failed to open {}: {}", filename.to_string_lossy(), e));
+    for line in std::io::BufReader::new(file).lines() {
+        let line =
+            line.unwrap_or_else(|e| abort!("failed to read {}: {}", filename.to_string_lossy(), e));
+        let line = unsafe { CString::from_vec_unchecked(line.into_bytes()) };
         parse_mimetype_line(line.as_ptr());
     }
 }
@@ -105,15 +133,6 @@ pub extern "C" fn parse_mimetype_line(line: *const libc::c_char) {
         assert!(extension.as_bytes().len() > 1);
         add_mime_mapping(extension.as_c_str().as_ptr(), mimetype.as_c_str().as_ptr());
     }
-}
-
-/// Prints message to standard error and exits with code 1.
-macro_rules! abort {
-    ($($arg:tt)*) => ({
-        eprint!("{}: ", env!("CARGO_PKG_NAME"));
-        eprintln!($($arg)*);
-        std::process::exit(1);
-    })
 }
 
 /// malloc that dies if it can't allocate.
