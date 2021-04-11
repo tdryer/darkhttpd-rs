@@ -11,7 +11,8 @@ class TestMimemap(TestHelper):
         self.files = [ ("test-file.a1",    "test/type1"),
                        ("test-file.ap2",   "test/type2"),
                        ("test-file.app3",  "test/type3"),
-                       ("test-file.appp4", "test/default") ]
+                       ("test-file.appp4", "test/default"),
+                       ("test-file.foo",   "test/foo") ]
         for fn, _ in self.files:
             with open(WWWROOT + "/" + fn, 'wb') as f:
                 f.write(self.data)
@@ -35,6 +36,7 @@ class TestMimemap(TestHelper):
     def test_get_2(self): self.get_helper(1)
     def test_get_3(self): self.get_helper(2)
     def test_get_4(self): self.get_helper(3)
+    def test_get_5(self): self.get_helper(4)
 
 if __name__ == '__main__':
     unittest.main()

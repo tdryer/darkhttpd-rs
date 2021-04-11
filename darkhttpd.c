@@ -495,54 +495,7 @@ extern void add_mime_mapping(const char *extension, const char *mimetype);
 extern const char *get_mimetype(const char *extension);
 
 /* Parses a mime.types line and adds the parsed data to the mime_map. */
-static void parse_mimetype_line(const char *line) {
-    unsigned int pad, bound1, lbound, rbound;
-
-    /* parse mimetype */
-    for (pad=0; (line[pad] == ' ') || (line[pad] == '\t'); pad++)
-        ;
-    if (line[pad] == '\0' || /* empty line */
-        line[pad] == '#')    /* comment */
-        return;
-
-    for (bound1=pad+1;
-        (line[bound1] != ' ') &&
-        (line[bound1] != '\t');
-        bound1++) {
-        if (line[bound1] == '\0')
-            return; /* malformed line */
-    }
-
-    lbound = bound1;
-    for (;;) {
-        char *mimetype, *extension;
-
-        /* find beginning of extension */
-        for (; (line[lbound] == ' ') || (line[lbound] == '\t'); lbound++)
-            ;
-        if (line[lbound] == '\0')
-            return; /* end of line */
-
-        /* find end of extension */
-        for (rbound = lbound;
-            line[rbound] != ' ' &&
-            line[rbound] != '\t' &&
-            line[rbound] != '\0';
-            rbound++)
-            ;
-
-        mimetype = split_string(line, pad, bound1);
-        extension = split_string(line, lbound, rbound);
-        add_mime_mapping(extension, mimetype);
-        free(mimetype);
-        free(extension);
-
-        if (line[rbound] == '\0')
-            return; /* end of line */
-        else
-            lbound = rbound + 1;
-    }
-}
+extern void parse_mimetype_line(const char *line);
 
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.

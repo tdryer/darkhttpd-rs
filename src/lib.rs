@@ -44,6 +44,34 @@ pub extern "C" fn get_mimetype(extension: *const libc::c_char) -> *const libc::c
     }
 }
 
+/// Parses a mime.types line and adds the parsed data to the mime_map.
+#[no_mangle]
+pub extern "C" fn parse_mimetype_line(line: *const libc::c_char) {
+    assert!(!line.is_null());
+    let line = unsafe { CStr::from_ptr(line) };
+    let mut fields = line
+        .to_bytes()
+        .split(|&b| b == b' ' || b == b'\t')
+        .filter(|slice| slice.len() > 0)
+        .map(|field| {
+            let mut field = field.to_vec();
+            field.push(0);
+            unsafe { CString::from_vec_unchecked(field) }
+        });
+    let mimetype = match fields.next() {
+        Some(mimetype) => mimetype,
+        None => return, // empty line
+    };
+    if mimetype.as_bytes()[0] == b'#' {
+        return; // comment
+    }
+    for extension in fields {
+        assert!(mimetype.as_bytes().len() > 1);
+        assert!(extension.as_bytes().len() > 1);
+        add_mime_mapping(extension.as_c_str().as_ptr(), mimetype.as_c_str().as_ptr());
+    }
+}
+
 /// Prints message to standard error and exits with code 1.
 macro_rules! abort {
     ($($arg:tt)*) => ({
