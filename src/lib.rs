@@ -201,8 +201,39 @@ pub extern "C" fn make_safe_url(url: *mut libc::c_char) -> *mut libc::c_char {
     url.as_mut_ptr()
 }
 
-/// Is this an rfc3986 "unreserved character"?
+/// Is this an RFC3986 "unreserved character"?
 #[no_mangle]
 pub extern "C" fn is_unreserved(c: libc::c_uchar) -> libc::c_int {
     (c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.' | b'_' | b'~')) as libc::c_int
+}
+
+/// Encode string to be an RFC3986-compliant URL part.
+#[no_mangle]
+pub extern "C" fn urlencode(src: *const libc::c_char, dest: *mut libc::c_char) {
+    assert!(!src.is_null());
+    assert!(!dest.is_null());
+    let hex = b"0123456789ABCDEF";
+    // TODO: Rewrite this using slices?
+    let mut src_index = 0;
+    let mut dest_index = 0;
+    while unsafe { src.offset(src_index).read() != 0 } {
+        let c = unsafe { src.offset(src_index).read() };
+        if is_unreserved(c as libc::c_uchar) == 0 {
+            unsafe {
+                dest.offset(dest_index).write(b'%' as libc::c_char);
+                dest_index += 1;
+                dest.offset(dest_index)
+                    .write(hex[((c >> 4) & 0xF) as usize] as libc::c_char);
+                dest_index += 1;
+                dest.offset(dest_index)
+                    .write(hex[(c & 0xF) as usize] as libc::c_char);
+                dest_index += 1;
+            };
+        } else {
+            unsafe { dest.offset(dest_index).write(c) };
+            dest_index += 1;
+        }
+        src_index += 1;
+    }
+    unsafe { dest.offset(dest_index).write(0) };
 }

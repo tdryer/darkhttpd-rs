@@ -1566,21 +1566,7 @@ extern int is_unreserved(const unsigned char c);
 /* Encode string to be an RFC3986-compliant URL part.
  * Contributed by nf.
  */
-static void urlencode(const char *src, char *dest) {
-    static const char hex[] = "0123456789ABCDEF";
-    int i, j;
-
-    for (i = j = 0; src[i] != '\0'; i++) {
-        if (!is_unreserved((unsigned char)src[i])) {
-            dest[j++] = '%';
-            dest[j++] = hex[(src[i] >> 4) & 0xF];
-            dest[j++] = hex[ src[i]       & 0xF];
-        }
-        else
-            dest[j++] = src[i];
-    }
-    dest[j] = '\0';
-}
+extern void urlencode(const char *src, char *dest);
 
 /* Escape < > & ' " into HTML entities. */
 static void append_escaped(struct apbuf *dst, const char *src) {
