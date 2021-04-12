@@ -1189,31 +1189,7 @@ static char *rfc1123_date(char *dest, const time_t when) {
 /* Decode URL by converting %XX (where XX are hexadecimal digits) to the
  * character it represents.  Don't forget to free the return value.
  */
-static char *urldecode(const char *url) {
-    size_t i, pos, len = strlen(url);
-    char *out = xmalloc(len+1);
-
-    for (i = 0, pos = 0; i < len; i++) {
-        if ((url[i] == '%') && (i+2 < len) &&
-            isxdigit(url[i+1]) && isxdigit(url[i+2])) {
-            /* decode %XX */
-#define HEX_TO_DIGIT(hex) ( \
-    ((hex) >= 'A' && (hex) <= 'F') ? ((hex)-'A'+10): \
-    ((hex) >= 'a' && (hex) <= 'f') ? ((hex)-'a'+10): \
-    ((hex)-'0') )
-
-            out[pos++] = HEX_TO_DIGIT(url[i+1]) * 16 +
-                         HEX_TO_DIGIT(url[i+2]);
-            i += 2;
-#undef HEX_TO_DIGIT
-        } else {
-            /* straight copy */
-            out[pos++] = url[i];
-        }
-    }
-    out[pos] = '\0';
-    return out;
-}
+extern char *urldecode(const char *url);
 
 /* Returns Connection or Keep-Alive header, depending on conn_close. */
 static const char *keep_alive(const struct connection *conn)

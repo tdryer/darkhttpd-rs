@@ -233,3 +233,41 @@ pub extern "C" fn urlencode(src: *const libc::c_char, dest: *mut libc::c_char) {
     }
     dest.write_all(&[0]).unwrap();
 }
+
+/// Decode URL by converting %XX (where XX are hexadecimal digits) to the character it represents.
+/// Don't forget to free the return value.
+#[no_mangle]
+pub extern "C" fn urldecode(url: *const libc::c_char) -> *mut libc::c_char {
+    assert!(!url.is_null());
+    let url = unsafe { slice::from_raw_parts(url as *const libc::c_uchar, libc::strlen(url)) };
+    let mut decoded = Vec::with_capacity(url.len());
+    let mut i = 0;
+    while i < url.len() {
+        let c = url[i];
+        assert!(c != 0);
+        if c == b'%'
+            && i + 2 < url.len()
+            && url[i + 1].is_ascii_hexdigit()
+            && url[i + 2].is_ascii_hexdigit()
+        {
+            decoded.push(hex_to_digit(url[i + 1]) * 16 + hex_to_digit(url[i + 2]));
+            i += 3;
+        } else {
+            decoded.push(c);
+            i += 1;
+        }
+    }
+    // TODO: Need to reconstitute using from_raw in order to free properly.
+    unsafe { CString::from_vec_unchecked(decoded).into_raw() }
+}
+
+/// Convert hex digit to integer.
+fn hex_to_digit(hex: u8) -> u8 {
+    if hex >= b'A' && hex <= b'F' {
+        hex - b'A' + 10
+    } else if hex >= b'a' && hex <= b'f' {
+        hex - b'a' + 10
+    } else {
+        hex - b'0'
+    }
+}
