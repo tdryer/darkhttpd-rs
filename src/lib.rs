@@ -3,6 +3,7 @@ use std::ffi::OsStr;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::BufRead;
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::slice;
 use std::sync::Mutex;
@@ -207,32 +208,28 @@ fn is_unreserved(c: libc::c_uchar) -> bool {
 }
 
 /// Encode string to be an RFC3986-compliant URL part.
+/// dest string must be three times longer than src string.
 #[no_mangle]
 pub extern "C" fn urlencode(src: *const libc::c_char, dest: *mut libc::c_char) {
     assert!(!src.is_null());
+    let src_len = unsafe { libc::strlen(src) };
+    let src = unsafe { slice::from_raw_parts(src as *const libc::c_uchar, src_len) };
     assert!(!dest.is_null());
+    let mut dest =
+        unsafe { slice::from_raw_parts_mut(dest as *mut libc::c_uchar, src_len * 3 + 1) };
+
     let hex = b"0123456789ABCDEF";
-    // TODO: Rewrite this using slices?
-    let mut src_index = 0;
-    let mut dest_index = 0;
-    while unsafe { src.offset(src_index).read() != 0 } {
-        let c = unsafe { src.offset(src_index).read() };
-        if is_unreserved(c as libc::c_uchar) {
-            unsafe {
-                dest.offset(dest_index).write(b'%' as libc::c_char);
-                dest_index += 1;
-                dest.offset(dest_index)
-                    .write(hex[((c >> 4) & 0xF) as usize] as libc::c_char);
-                dest_index += 1;
-                dest.offset(dest_index)
-                    .write(hex[(c & 0xF) as usize] as libc::c_char);
-                dest_index += 1;
-            };
+    for &c in src {
+        if !is_unreserved(c) {
+            dest.write_all(&[
+                b'%',
+                hex[((c >> 4) & 0xF) as usize],
+                hex[(c & 0xF) as usize],
+            ])
+            .unwrap();
         } else {
-            unsafe { dest.offset(dest_index).write(c) };
-            dest_index += 1;
+            dest.write_all(&[c]).unwrap();
         }
-        src_index += 1;
     }
-    unsafe { dest.offset(dest_index).write(0) };
+    dest.write_all(&[0]).unwrap();
 }
