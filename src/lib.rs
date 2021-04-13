@@ -25,6 +25,7 @@ static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
     Mutex::new(mime_map)
 });
 
+// TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
     "application/ogg         ogg",
     "application/pdf         pdf",
@@ -104,6 +105,7 @@ fn add_mimetype_line(line: &CStr) {
     for extension in fields {
         assert!(mimetype.as_bytes().len() > 1);
         assert!(extension.as_bytes().len() > 1);
+        // TODO: Cases valgrind false-positives as "possibly lost" and "still reachable".
         MIME_MAP
             .lock()
             .expect("failed to lock MIME_MAP")
@@ -215,6 +217,7 @@ pub extern "C" fn urlencode(src: *const libc::c_char, dest: *mut libc::c_char) {
     let src_len = unsafe { libc::strlen(src) };
     let src = unsafe { slice::from_raw_parts(src as *const libc::c_uchar, src_len) };
     assert!(!dest.is_null());
+    // TODO: Allocate the string ourselves instead?
     let mut dest =
         unsafe { slice::from_raw_parts_mut(dest as *mut libc::c_uchar, src_len * 3 + 1) };
 
