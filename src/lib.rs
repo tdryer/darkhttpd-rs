@@ -210,16 +210,13 @@ fn is_unreserved(c: libc::c_uchar) -> bool {
 }
 
 /// Encode string to be an RFC3986-compliant URL part.
-/// dest string must be three times longer than src string.
+/// Don't forget to free the return value.
 #[no_mangle]
-pub extern "C" fn urlencode(src: *const libc::c_char, dest: *mut libc::c_char) {
+pub extern "C" fn urlencode(src: *const libc::c_char) -> *mut libc::c_char {
     assert!(!src.is_null());
     let src_len = unsafe { libc::strlen(src) };
     let src = unsafe { slice::from_raw_parts(src as *const libc::c_uchar, src_len) };
-    assert!(!dest.is_null());
-    // TODO: Allocate the string ourselves instead?
-    let mut dest =
-        unsafe { slice::from_raw_parts_mut(dest as *mut libc::c_uchar, src_len * 3 + 1) };
+    let mut dest = Vec::with_capacity(src.len());
 
     let hex = b"0123456789ABCDEF";
     for &c in src {
@@ -235,6 +232,7 @@ pub extern "C" fn urlencode(src: *const libc::c_char, dest: *mut libc::c_char) {
         }
     }
     dest.write_all(&[0]).unwrap();
+    unsafe { CString::from_vec_unchecked(dest).into_raw() }
 }
 
 /// Decode URL by converting %XX (where XX are hexadecimal digits) to the character it represents.

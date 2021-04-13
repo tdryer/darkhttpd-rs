@@ -1537,7 +1537,7 @@ static void cleanup_sorted_dirlist(struct dlent **list, const ssize_t size) {
 /* Encode string to be an RFC3986-compliant URL part.
  * Contributed by nf.
  */
-extern void urlencode(const char *src, char *dest);
+extern char *urlencode(const char *src);
 
 /* Escape < > & ' " into HTML entities. */
 static void append_escaped(struct apbuf *dst, const char *src) {
@@ -1565,6 +1565,9 @@ static void append_escaped(struct apbuf *dst, const char *src) {
         pos++;
     }
 }
+
+/* Free a string allocated by Rust. */
+extern void free_rust_cstring(char *s);
 
 static void generate_dir_listing(struct connection *conn, const char *path,
         const char *decoded_url) {
@@ -1602,15 +1605,11 @@ static void generate_dir_listing(struct connection *conn, const char *path,
     memset(spaces, ' ', maxlen);
 
     for (i=0; i<listsize; i++) {
-        /* If a filename is made up of entirely unsafe chars,
-         * the url would be three times its original length.
-         */
-        char safe_url[MAXNAMLEN*3 + 1];
-
-        urlencode(list[i]->name, safe_url);
+        char *safe_url = urlencode(list[i]->name);
 
         append(listing, "<a href=\"");
         append(listing, safe_url);
+        free_rust_cstring(safe_url);
         append(listing, "\">");
         append_escaped(listing, list[i]->name);
         append(listing, "</a>");
@@ -1653,9 +1652,6 @@ static void generate_dir_listing(struct connection *conn, const char *path,
     conn->reply_type = REPLY_GENERATED;
     conn->http_code = 200;
 }
-
-/* Free a string allocated by Rust. */
-extern void free_rust_cstring(char *s);
 
 /* Process a GET/HEAD request. */
 static void process_get(struct connection *conn) {
