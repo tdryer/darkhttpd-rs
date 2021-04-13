@@ -257,7 +257,6 @@ pub extern "C" fn urldecode(url: *const libc::c_char) -> *mut libc::c_char {
             i += 1;
         }
     }
-    // TODO: Need to reconstitute using from_raw in order to free properly.
     unsafe { CString::from_vec_unchecked(decoded).into_raw() }
 }
 
@@ -270,4 +269,11 @@ fn hex_to_digit(hex: u8) -> u8 {
     } else {
         hex - b'0'
     }
+}
+
+/// Free a string allocated by Rust.
+#[no_mangle]
+pub extern "C" fn free_rust_cstring(s: *mut libc::c_char) {
+    assert!(!s.is_null());
+    unsafe { CString::from_raw(s) };
 }

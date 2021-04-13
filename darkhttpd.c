@@ -1654,6 +1654,9 @@ static void generate_dir_listing(struct connection *conn, const char *path,
     conn->http_code = 200;
 }
 
+/* Free a string allocated by Rust. */
+extern void free_rust_cstring(char *s);
+
 /* Process a GET/HEAD request. */
 static void process_get(struct connection *conn) {
     char *decoded_url, *end, *target, *if_mod_since;
@@ -1673,7 +1676,7 @@ static void process_get(struct connection *conn) {
     if (make_safe_url(decoded_url) == NULL) {
         default_reply(conn, 400, "Bad Request",
                       "You requested an invalid URL.");
-        free(decoded_url);
+        free_rust_cstring(decoded_url);
         return;
     }
 
@@ -1698,7 +1701,7 @@ static void process_get(struct connection *conn) {
     }
     if (forward_to) {
         redirect(conn, "%s%s", forward_to, decoded_url);
-        free(decoded_url);
+        free_rust_cstring(decoded_url);
         return;
     }
 
@@ -1708,7 +1711,7 @@ static void process_get(struct connection *conn) {
         if (!file_exists(target)) {
             free(target);
             if (no_listing) {
-                free(decoded_url);
+                free_rust_cstring(decoded_url);
                 /* Return 404 instead of 403 to make --no-listing
                  * indistinguishable from the directory not existing.
                  * i.e.: Don't leak information.
@@ -1720,7 +1723,7 @@ static void process_get(struct connection *conn) {
             xasprintf(&target, "%s%s", wwwroot, decoded_url);
             generate_dir_listing(conn, target, decoded_url);
             free(target);
-            free(decoded_url);
+            free_rust_cstring(decoded_url);
             return;
         }
         mimetype = url_content_type(index_name);
@@ -1730,7 +1733,7 @@ static void process_get(struct connection *conn) {
         xasprintf(&target, "%s%s", wwwroot, decoded_url);
         mimetype = url_content_type(decoded_url);
     }
-    free(decoded_url);
+    free_rust_cstring(decoded_url);
     if (debug)
         printf("url=\"%s\", target=\"%s\", content-type=\"%s\"\n",
                conn->url, target, mimetype);
