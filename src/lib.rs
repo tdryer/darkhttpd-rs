@@ -10,6 +10,8 @@ use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
 
+mod bindings;
+
 /// Prints message to standard error and exits with code 1.
 macro_rules! abort {
     ($($arg:tt)*) => ({
