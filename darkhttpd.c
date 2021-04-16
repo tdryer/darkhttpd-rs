@@ -430,6 +430,9 @@ static void appendf(struct apbuf *buf, const char *format, ...) {
     free(tmp);
 }
 
+/* Free a string allocated by Rust. */
+extern void free_rust_cstring(char *s);
+
 /* Make the specified socket non-blocking. */
 static void nonblock_socket(const int sock) {
     int flags = fcntl(sock, F_GETFL);
@@ -1102,9 +1105,9 @@ static void free_connection(struct connection *conn) {
     if (conn->request != NULL) free(conn->request);
     if (conn->method != NULL) free(conn->method);
     if (conn->url != NULL) free(conn->url);
-    if (conn->referer != NULL) free(conn->referer);
-    if (conn->user_agent != NULL) free(conn->user_agent);
-    if (conn->authorization != NULL) free(conn->authorization);
+    if (conn->referer != NULL) free_rust_cstring(conn->referer);
+    if (conn->user_agent != NULL) free_rust_cstring(conn->user_agent);
+    if (conn->authorization != NULL) free_rust_cstring(conn->authorization);
     if (conn->header != NULL && !conn->header_dont_free) free(conn->header);
     if (conn->reply != NULL && !conn->reply_dont_free) free(conn->reply);
     if (conn->reply_fd != -1) xclose(conn->reply_fd);
@@ -1306,28 +1309,7 @@ static void redirect(struct connection *conn, const char *format, ...) {
  * You need to remember to deallocate the result.
  * example: parse_field(conn, "Referer: ");
  */
-static char *parse_field(const struct connection *conn, const char *field) {
-    size_t bound1, bound2;
-    char *pos;
-
-    /* find start */
-    pos = strstr(conn->request, field);
-    if (pos == NULL)
-        return NULL;
-    assert(pos >= conn->request);
-    bound1 = (size_t)(pos - conn->request) + strlen(field);
-
-    /* find end */
-    for (bound2 = bound1;
-         ((bound2 < conn->request_length) &&
-          (conn->request[bound2] != '\r') &&
-          (conn->request[bound2] != '\n'));
-         bound2++)
-            ;
-
-    /* copy to buffer */
-    return split_string(conn->request, bound1, bound2);
-}
+extern char *parse_field(const struct connection *conn, const char *field);
 
 /* Parse a Range: field into range_begin and range_end.  Only handles the
  * first range if a list is given.  Sets range_{begin,end}_given to 1 if
@@ -1374,7 +1356,7 @@ static void parse_range_field(struct connection *conn) {
             conn->range_end = (off_t)strtoll(range+bound1, NULL, 10);
         }
     } while(0);
-    free(range);
+    free_rust_cstring(range);
 }
 
 /* Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the
@@ -1445,7 +1427,7 @@ static int parse_request(struct connection *conn) {
             conn->conn_close = 1;
         else if (strcasecmp(tmp, "keep-alive") == 0)
             conn->conn_close = 0;
-        free(tmp);
+        free_rust_cstring(tmp);
     }
 
     /* cmdline flag can be used to deny keep-alive */
@@ -1565,9 +1547,6 @@ static void append_escaped(struct apbuf *dst, const char *src) {
         pos++;
     }
 }
-
-/* Free a string allocated by Rust. */
-extern void free_rust_cstring(char *s);
 
 static void generate_dir_listing(struct connection *conn, const char *path,
         const char *decoded_url) {
@@ -1689,7 +1668,7 @@ static void process_get(struct connection *conn) {
                     break;
                 }
             }
-            free(host);
+            free_rust_cstring(host);
         }
     }
     if (!forward_to) {
@@ -1793,10 +1772,10 @@ static void process_get(struct connection *conn) {
         conn->reply_type = REPLY_GENERATED;
         conn->header_only = 1;
 
-        free(if_mod_since);
+        free_rust_cstring(if_mod_since);
         return;
     }
-    free(if_mod_since);
+    free_rust_cstring(if_mod_since);
 
     if (conn->range_begin_given || conn->range_end_given) {
         off_t from, to;

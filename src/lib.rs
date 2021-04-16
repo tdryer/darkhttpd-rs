@@ -277,6 +277,59 @@ fn hex_to_digit(hex: u8) -> u8 {
 /// Free a string allocated by Rust.
 #[no_mangle]
 pub extern "C" fn free_rust_cstring(s: *mut libc::c_char) {
-    assert!(!s.is_null());
-    unsafe { CString::from_raw(s) };
+    // No operation is performed if the pointer is null (like `free`).
+    if !s.is_null() {
+        unsafe {
+            CString::from_raw(s);
+        }
+    }
+}
+
+/// Parses a single HTTP request field.  Returns string from end of [field] to
+/// first \r, \n or end of request string.  Returns NULL if [field] can't be
+/// matched.
+///
+/// You need to remember to deallocate the result.
+/// example: parse_field(conn, "Referer: ");
+#[no_mangle]
+pub extern "C" fn parse_field(
+    conn: *const bindings::connection,
+    field: *const libc::c_char,
+) -> *const libc::c_char {
+    assert!(!conn.is_null());
+    let conn = unsafe { *conn };
+    assert!(!conn.request.is_null());
+    let request = unsafe { CStr::from_ptr(conn.request) };
+    assert!(!field.is_null());
+    let field = unsafe { CStr::from_ptr(field) };
+
+    // TODO: Header names should be case-insensitive.
+    // TODO: Parse the request instead of naively searching for the header name.
+    let field_start_pod = match find(field.to_bytes(), request.to_bytes()) {
+        Some(field_start_pod) => field_start_pod,
+        None => return std::ptr::null(),
+    };
+
+    let value_start_pos = field_start_pod + field.to_bytes().len();
+    let mut value_end_pos = 0;
+    for i in value_start_pos..request.to_bytes().len() {
+        value_end_pos = i;
+        let c = request.to_bytes()[i];
+        if c == b'\r' || c == b'\n' {
+            break;
+        }
+    }
+
+    let value = &request.to_bytes()[value_start_pos..value_end_pos];
+    unsafe { CString::from_vec_unchecked(value.to_vec()).into_raw() }
+}
+
+/// Return index of first occurrence of `needle` in `haystack`.
+fn find(needle: &[u8], haystack: &[u8]) -> Option<usize> {
+    for i in 0..haystack.len() {
+        if haystack[i..].starts_with(needle) {
+            return Some(i);
+        }
+    }
+    return None;
 }
