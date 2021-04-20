@@ -1315,49 +1315,7 @@ extern char *parse_field(const struct connection *conn, const char *field);
  * first range if a list is given.  Sets range_{begin,end}_given to 1 if
  * either part of the range is given.
  */
-static void parse_range_field(struct connection *conn) {
-    char *range;
-
-    range = parse_field(conn, "Range: bytes=");
-    if (range == NULL)
-        return;
-
-    do {
-        size_t bound1, bound2, len;
-        len = strlen(range);
-
-        /* parse number up to hyphen */
-        bound1 = 0;
-        for (bound2=0;
-            (bound2 < len) && isdigit((int)range[bound2]);
-            bound2++)
-                ;
-
-        if ((bound2 == len) || (range[bound2] != '-'))
-            break; /* there must be a hyphen here */
-
-        if (bound1 != bound2) {
-            conn->range_begin_given = 1;
-            conn->range_begin = (off_t)strtoll(range+bound1, NULL, 10);
-        }
-
-        /* parse number after hyphen */
-        bound2++;
-        for (bound1=bound2;
-            (bound2 < len) && isdigit((int)range[bound2]);
-            bound2++)
-                ;
-
-        if ((bound2 != len) && (range[bound2] != ','))
-            break; /* must be end of string or a list to be valid */
-
-        if (bound1 != bound2) {
-            conn->range_end_given = 1;
-            conn->range_end = (off_t)strtoll(range+bound1, NULL, 10);
-        }
-    } while(0);
-    free_rust_cstring(range);
-}
+extern void parse_range_field(struct connection *conn);
 
 /* Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the
  * url (/), the referer (if given) and the user-agent (if given).  Remember to

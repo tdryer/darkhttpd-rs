@@ -295,7 +295,8 @@ pub extern "C" fn free_rust_cstring(s: *mut libc::c_char) {
 pub extern "C" fn parse_field(
     conn: *const bindings::connection,
     field: *const libc::c_char,
-) -> *const libc::c_char {
+) -> *mut libc::c_char {
+    // TODO: as_ref instead
     assert!(!conn.is_null());
     let conn = unsafe { *conn };
     assert!(!conn.request.is_null());
@@ -307,7 +308,7 @@ pub extern "C" fn parse_field(
     // TODO: Parse the request instead of naively searching for the header name.
     let field_start_pod = match find(field.to_bytes(), request.to_bytes()) {
         Some(field_start_pod) => field_start_pod,
-        None => return std::ptr::null(),
+        None => return std::ptr::null_mut(),
     };
 
     let value_start_pos = field_start_pod + field.to_bytes().len();
@@ -332,4 +333,64 @@ fn find(needle: &[u8], haystack: &[u8]) -> Option<usize> {
         }
     }
     return None;
+}
+
+/// Parse a Range: field into range_begin and range_end. Only handles the first range if a list is
+/// given. Sets range_{begin,end}_given to 1 if either part of the range is given.
+#[no_mangle]
+pub extern "C" fn parse_range_field(conn: *mut bindings::connection) {
+    let field = CString::new("Range: bytes=").unwrap();
+    let range = parse_field(conn, field.as_c_str().as_ptr());
+    if range.is_null() {
+        return;
+    }
+    // Valid because parse_field returns CString::into_raw
+    let range = unsafe { CString::from_raw(range) };
+    let data = range.as_bytes();
+
+    // parse number up to hyphen
+    let range_begin_len = parse_digits(data);
+    let range_begin: Option<libc::off_t> = std::str::from_utf8(&data[0..range_begin_len])
+        .unwrap()
+        .parse()
+        .ok();
+    let data = &data[range_begin_len..];
+
+    // there must be a hyphen here
+    if data.len() == 0 || data[0] != b'-' {
+        return;
+    }
+    let data = &data[1..];
+
+    let conn = unsafe { conn.as_mut().unwrap() };
+    if let Some(range_begin) = range_begin {
+        conn.range_begin_given = 1;
+        conn.range_begin = range_begin;
+    }
+
+    // parse number after hyphen
+    let range_end_len = parse_digits(data);
+    let range_end: Option<libc::off_t> = std::str::from_utf8(&data[0..range_end_len])
+        .unwrap()
+        .parse()
+        .ok();
+    let data = &data[range_end_len..];
+
+    // must be end of string or a list to be valid
+    if data.len() > 0 && data[0] != b',' {
+        return;
+    }
+
+    if let Some(range_end) = range_end {
+        conn.range_end_given = 1;
+        conn.range_end = range_end;
+    }
+}
+
+fn parse_digits(data: &[u8]) -> usize {
+    let mut digits_len = 0;
+    while digits_len < data.len() && data[digits_len].is_ascii_digit() {
+        digits_len += 1;
+    }
+    digits_len
 }
