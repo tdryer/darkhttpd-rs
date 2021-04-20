@@ -346,21 +346,16 @@ pub extern "C" fn parse_range_field(conn: *mut bindings::connection) {
     }
     // Valid because parse_field returns CString::into_raw
     let range = unsafe { CString::from_raw(range) };
-    let data = range.as_bytes();
+    let remaining = range.as_bytes();
 
     // parse number up to hyphen
-    let range_begin_len = parse_digits(data);
-    let range_begin: Option<libc::off_t> = std::str::from_utf8(&data[0..range_begin_len])
-        .unwrap()
-        .parse()
-        .ok();
-    let data = &data[range_begin_len..];
+    let (range_begin, remaining) = parse_offset(remaining);
 
     // there must be a hyphen here
-    if data.len() == 0 || data[0] != b'-' {
+    if remaining.len() == 0 || remaining[0] != b'-' {
         return;
     }
-    let data = &data[1..];
+    let remaining = &remaining[1..];
 
     let conn = unsafe { conn.as_mut().unwrap() };
     if let Some(range_begin) = range_begin {
@@ -369,15 +364,10 @@ pub extern "C" fn parse_range_field(conn: *mut bindings::connection) {
     }
 
     // parse number after hyphen
-    let range_end_len = parse_digits(data);
-    let range_end: Option<libc::off_t> = std::str::from_utf8(&data[0..range_end_len])
-        .unwrap()
-        .parse()
-        .ok();
-    let data = &data[range_end_len..];
+    let (range_end, remaining) = parse_offset(remaining);
 
     // must be end of string or a list to be valid
-    if data.len() > 0 && data[0] != b',' {
+    if remaining.len() > 0 && remaining[0] != b',' {
         return;
     }
 
@@ -387,10 +377,14 @@ pub extern "C" fn parse_range_field(conn: *mut bindings::connection) {
     }
 }
 
-fn parse_digits(data: &[u8]) -> usize {
+fn parse_offset(data: &[u8]) -> (Option<libc::off_t>, &[u8]) {
     let mut digits_len = 0;
     while digits_len < data.len() && data[digits_len].is_ascii_digit() {
         digits_len += 1;
     }
-    digits_len
+    let offset = std::str::from_utf8(&data[0..digits_len])
+        .unwrap()
+        .parse()
+        .ok();
+    (offset, &data[digits_len..])
 }
