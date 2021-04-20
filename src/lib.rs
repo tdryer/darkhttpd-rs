@@ -296,9 +296,7 @@ pub extern "C" fn parse_field(
     conn: *const bindings::connection,
     field: *const libc::c_char,
 ) -> *mut libc::c_char {
-    // TODO: as_ref instead
-    assert!(!conn.is_null());
-    let conn = unsafe { *conn };
+    let conn = unsafe { conn.as_ref().unwrap() };
     assert!(!conn.request.is_null());
     let request = unsafe { CStr::from_ptr(conn.request) };
     assert!(!field.is_null());
