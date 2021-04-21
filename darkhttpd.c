@@ -1180,13 +1180,7 @@ static void poll_check_timeout(struct connection *conn) {
  * buffer is returned for convenience.
  */
 #define DATE_LEN 30 /* strlen("Fri, 28 Feb 2003 00:02:08 GMT")+1 */
-static char *rfc1123_date(char *dest, const time_t when) {
-    time_t when_copy = when;
-    if (strftime(dest, DATE_LEN,
-                 "%a, %d %b %Y %H:%M:%S GMT", gmtime(&when_copy)) == 0)
-        errx(1, "strftime() failed [%s]", dest);
-    return dest;
-}
+extern char *rfc1123_date(char *dest, const time_t when);
 
 /* Decode URL by converting %XX (where XX are hexadecimal digits) to the
  * character it represents.  Don't forget to free the return value.

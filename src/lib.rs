@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::ffi::{CStr, CString};
 use std::fs::File;
@@ -8,6 +9,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::slice;
 use std::sync::Mutex;
 
+use chrono::{TimeZone, Utc};
 use once_cell::sync::Lazy;
 
 mod bindings;
@@ -142,6 +144,23 @@ pub extern "C" fn keep_alive(conn: *const bindings::connection) -> *mut libc::c_
         .unwrap()
         .into_raw()
     }
+}
+
+/// Format [when] as an RFC1123 date, stored in the specified buffer. The same buffer is returned
+/// for convenience.
+#[no_mangle]
+pub extern "C" fn rfc1123_date(dest: *mut libc::c_char, when: libc::time_t) -> *mut libc::c_char {
+    let datetime = Utc.timestamp(when, 0);
+    let mut dest_slice = unsafe {
+        slice::from_raw_parts_mut(dest as *mut u8, bindings::DATE_LEN.try_into().unwrap())
+    };
+    write!(
+        dest_slice,
+        "{}\x00",
+        datetime.format("%a, %d %b %Y %H:%M:%S GMT")
+    )
+    .unwrap();
+    dest
 }
 
 /// malloc that dies if it can't allocate.
