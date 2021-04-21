@@ -21,11 +21,12 @@ macro_rules! abort {
     })
 }
 
-// TODO: Remove this global when we can propagate it instead.
+// TODO: Remove these statics when we can propagate them instead.
 static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
     let mime_map = HashMap::new();
     Mutex::new(mime_map)
 });
+static KEEP_ALIVE_FIELD: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 
 // TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
@@ -112,6 +113,34 @@ fn add_mimetype_line(line: &CStr) {
             .lock()
             .expect("failed to lock MIME_MAP")
             .insert(extension, mimetype.clone());
+    }
+}
+
+/// Set the keep alive field.
+#[no_mangle]
+pub extern "C" fn set_keep_alive_field(timeout_secs: libc::c_int) {
+    let mut field = KEEP_ALIVE_FIELD
+        .lock()
+        .expect("failed to lock KEEP_ALIVE_FIELD");
+    field.clear();
+    field.push_str(&format!("Keep-Alive: timeout={}\r\n", timeout_secs));
+}
+
+/// Returns Connection or Keep-Alive header, depending on conn_close.
+#[no_mangle]
+pub extern "C" fn keep_alive(conn: *const bindings::connection) -> *mut libc::c_char {
+    let conn = unsafe { conn.as_ref().unwrap() };
+    if conn.conn_close == 1 {
+        CString::new("Connection: close\r\n").unwrap().into_raw()
+    } else {
+        CString::new(
+            KEEP_ALIVE_FIELD
+                .lock()
+                .expect("failed to lock KEEP_ALIVE_FIELD")
+                .as_bytes(),
+        )
+        .unwrap()
+        .into_raw()
     }
 }
 
