@@ -16,6 +16,7 @@ fn main() {
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .allowlist_type("connection")
         .allowlist_var("DATE_LEN")
+        .allowlist_var("GENERATED_ON_LEN")
         .generate()
         .expect("Unable to generate bindings");
 
