@@ -459,3 +459,86 @@ fn parse_offset(data: &[u8]) -> (Option<libc::off_t>, &[u8]) {
         .ok();
     (offset, &data[digits_len..])
 }
+
+/// A default reply for any (erroneous) occasion.
+#[no_mangle]
+pub extern "C" fn default_reply_impl(
+    conn: *mut bindings::connection,
+    errcode: libc::c_int,
+    errname: *const libc::c_char,
+    reason: *const libc::c_char,
+    server_hdr: *const libc::c_char,
+    auth_key: *const libc::c_char,
+    pkgname: *const libc::c_char,
+    want_server_id: libc::c_int,
+    now: libc::time_t,
+) {
+    let conn = unsafe { conn.as_mut().unwrap() };
+    assert!(!errname.is_null());
+    let errname = unsafe { CStr::from_ptr(errname).to_str().unwrap() };
+    assert!(!reason.is_null());
+    let reason = unsafe { CStr::from_ptr(reason).to_str().unwrap() };
+    assert!(!server_hdr.is_null());
+    let server_hdr = unsafe { CStr::from_ptr(server_hdr).to_str().unwrap() };
+    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
+
+    let date = &mut [0 as libc::c_char; bindings::DATE_LEN as usize];
+    rfc1123_date(date.as_mut_ptr(), now);
+
+    let generated_on_str = &mut [0; bindings::GENERATED_ON_LEN as usize];
+    generated_on(
+        pkgname,
+        want_server_id,
+        generated_on_str.as_mut_ptr(),
+        date.as_ptr(),
+    );
+
+    let reply = format!(
+        "<html><head><title>{} {}</title></head><body>\n\
+        <h1>{}</h1>\n\
+        {}\n\
+        <hr>\n\
+        {}\
+        </body></html>\n",
+        errcode,
+        errname,
+        errname,
+        reason,
+        unsafe { CStr::from_ptr(generated_on_str.as_ptr()) }
+            .to_str()
+            .unwrap()
+    );
+    let reply = CString::new(reply).unwrap();
+    conn.reply_length = reply.as_bytes().len() as libc::off_t;
+    conn.reply = reply.into_raw(); // TODO: freed by C
+
+    let headers = format!(
+        "HTTP/1.1 {} {}\r\n\
+        Date: {}\r\n\
+        {}\
+        Accept-Ranges: bytes\r\n\
+        {}\
+        Content-Length: {}\r\n\
+        Content-Type: text/html; charset=UTF-8\r\n\
+        {}\
+        \r\n",
+        errcode,
+        errname,
+        unsafe { CStr::from_ptr(date.as_ptr()) }.to_str().unwrap(),
+        server_hdr,
+        keep_alive_field.to_str().unwrap(),
+        conn.reply_length,
+        if !auth_key.is_null() {
+            "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
+        } else {
+            ""
+        }
+    );
+    let headers = CString::new(headers).unwrap();
+    conn.header_length = headers.as_bytes().len() as bindings::size_t;
+    conn.header = headers.into_raw(); // TODO: freed by C
+
+    conn.reply_type = bindings::connection_REPLY_GENERATED;
+    conn.http_code = errcode;
+    conn.reply_start = 0; // Reset in case the request set a range.
+}

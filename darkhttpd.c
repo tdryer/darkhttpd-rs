@@ -1198,56 +1198,29 @@ static char _generated_on_buf[13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2];
 extern const char *generated_on(const char *pkgname, int want_server_id,
         char dest[GENERATED_ON_LEN], const char date[DATE_LEN]);
 
+extern void default_reply_impl(struct connection *conn, const int errcode,
+        const char *errname, const char *reason, const char *server_hdr,
+        const char *auth_key, const char *pkgname, int want_server_id,
+        time_t now);
+
 /* A default reply for any (erroneous) occasion. */
 static void default_reply(struct connection *conn,
         const int errcode, const char *errname, const char *format, ...)
         __printflike(4, 5);
 static void default_reply(struct connection *conn,
         const int errcode, const char *errname, const char *format, ...) {
-    char *reason, date[DATE_LEN];
+    char *reason;
     va_list va;
 
     va_start(va, format);
     xvasprintf(&reason, format, va);
     va_end(va);
 
-    /* Only really need to calculate the date once. */
-    rfc1123_date(date, now);
+    /* C wrapper just deals with formatting the reason. */
+    default_reply_impl(conn, errcode, errname, reason, server_hdr, auth_key,
+            pkgname, want_server_id, now);
 
-    conn->reply_length = xasprintf(&(conn->reply),
-     "<html><head><title>%d %s</title></head><body>\n"
-     "<h1>%s</h1>\n" /* errname */
-     "%s\n" /* reason */
-     "<hr>\n"
-     "%s" /* generated on */
-     "</body></html>\n",
-     errcode, errname, errname, reason, generated_on(pkgname, want_server_id, _generated_on_buf, date));
     free(reason);
-
-    const char auth_header[] =
-        "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n";
-
-    char *keep_alive_field = keep_alive(conn);
-    conn->header_length = xasprintf(&(conn->header),
-     "HTTP/1.1 %d %s\r\n"
-     "Date: %s\r\n"
-     "%s" /* server */
-     "Accept-Ranges: bytes\r\n"
-     "%s" /* keep-alive */
-     "Content-Length: %llu\r\n"
-     "Content-Type: text/html; charset=UTF-8\r\n"
-     "%s"
-     "\r\n",
-     errcode, errname, date, server_hdr, keep_alive_field,
-     llu(conn->reply_length),
-     (auth_key != NULL ? auth_header : ""));
-    free_rust_cstring(keep_alive_field);
-
-    conn->reply_type = REPLY_GENERATED;
-    conn->http_code = errcode;
-
-    /* Reset reply_start in case the request set a range. */
-    conn->reply_start = 0;
 }
 
 static void redirect(struct connection *conn, const char *format, ...)
