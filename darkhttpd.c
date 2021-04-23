@@ -258,6 +258,8 @@ struct forward_mapping {
 
 /* Container for mutable static variables. */
 struct server {
+    const char *pkgname;
+    const char *copyright;
     struct forward_mapping *forward_map;
     size_t forward_map_size;
     const char *forward_all_url;
@@ -298,6 +300,8 @@ struct server {
 };
 
 static struct server srv = {
+    .pkgname = pkgname,
+    .copyright = copyright,
     .forward_map = NULL,
     .forward_map_size = 0,
     .forward_all_url = NULL,
@@ -1232,12 +1236,12 @@ extern char *keep_alive(const struct connection *conn);
  */
 const unsigned int GENERATED_ON_LEN = 13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2;
 static char _generated_on_buf[13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2];
-extern const char *generated_on(const struct server *srv, const char *pkgname,
+extern const char *generated_on(const struct server *srv,
         char dest[GENERATED_ON_LEN], const char date[DATE_LEN]);
 
 extern void default_reply_impl(const struct server *srv,
         struct connection *conn, const int errcode, const char *errname,
-        const char *reason, const char *pkgname);
+        const char *reason);
 
 /* A default reply for any (erroneous) occasion. */
 static void default_reply(struct connection *conn,
@@ -1253,7 +1257,7 @@ static void default_reply(struct connection *conn,
     va_end(va);
 
     /* C wrapper just deals with formatting the reason. */
-    default_reply_impl(&srv, conn, errcode, errname, reason, pkgname);
+    default_reply_impl(&srv, conn, errcode, errname, reason);
 
     free(reason);
 }
@@ -1278,7 +1282,7 @@ static void redirect(struct connection *conn, const char *format, ...) {
      "<hr>\n"
      "%s" /* generated on */
      "</body></html>\n",
-     where, where, generated_on(&srv, pkgname, _generated_on_buf, date));
+     where, where, generated_on(&srv, _generated_on_buf, date));
 
     char *keep_alive_field = keep_alive(conn);
     conn->header_length = xasprintf(&(conn->header),
@@ -1565,7 +1569,7 @@ static void generate_dir_listing(struct connection *conn, const char *path,
      "<hr>\n");
 
     rfc1123_date(date, srv.now);
-    append(listing, generated_on(&srv, pkgname, _generated_on_buf, date));
+    append(listing, generated_on(&srv, _generated_on_buf, date));
     append(listing, "</body>\n</html>\n");
 
     conn->reply = listing->str;
@@ -2354,12 +2358,12 @@ extern void set_keep_alive_field(int timeout_secs);
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
-    printf("%s, %s.\n", pkgname, copyright);
+    printf("%s, %s.\n", srv.pkgname, srv.copyright);
     parse_default_extension_map();
     parse_commandline(argc, argv);
     set_keep_alive_field(srv.timeout_secs);
     if (srv.want_server_id)
-        xasprintf(&srv.server_hdr, "Server: %s\r\n", pkgname);
+        xasprintf(&srv.server_hdr, "Server: %s\r\n", srv.pkgname);
     else
         srv.server_hdr = xstrdup("");
     init_sockin();
