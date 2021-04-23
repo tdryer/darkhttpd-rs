@@ -470,7 +470,7 @@ pub extern "C" fn default_reply_impl(
     reason: *const libc::c_char,
 ) {
     let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().unwrap() };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
     assert!(!errname.is_null());
     let errname = unsafe { CStr::from_ptr(errname).to_str().unwrap() };
     assert!(!reason.is_null());
@@ -483,11 +483,7 @@ pub extern "C" fn default_reply_impl(
     rfc1123_date(date.as_mut_ptr(), server.now);
 
     let generated_on_str = &mut [0; bindings::GENERATED_ON_LEN as usize];
-    generated_on(
-        server,
-        generated_on_str.as_mut_ptr(),
-        date.as_ptr(),
-    );
+    generated_on(server, generated_on_str.as_mut_ptr(), date.as_ptr());
 
     let reply = format!(
         "<html><head><title>{} {}</title></head><body>\n\
@@ -537,4 +533,65 @@ pub extern "C" fn default_reply_impl(
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = errcode;
     conn.reply_start = 0; // Reset in case the request set a range.
+}
+
+/// A redirect reply.
+#[no_mangle]
+pub extern "C" fn redirect_impl(
+    server: *const bindings::server,
+    conn: *mut bindings::connection,
+    location: *const libc::c_char,
+) {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+    assert!(!location.is_null());
+    let location = unsafe { CStr::from_ptr(location).to_str().unwrap() };
+    assert!(!server.server_hdr.is_null());
+    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
+    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
+
+    let date = &mut [0 as libc::c_char; bindings::DATE_LEN as usize];
+    rfc1123_date(date.as_mut_ptr(), server.now);
+
+    let generated_on_str = &mut [0; bindings::GENERATED_ON_LEN as usize];
+    generated_on(server, generated_on_str.as_mut_ptr(), date.as_ptr());
+
+    let reply = format!(
+        "<html><head><title>301 Moved Permanently</title></head><body>\n\
+        <h1>Moved Permanently</h1>\n\
+        Moved to: <a href=\"{}\">{}</a>\n\
+        <hr>\n\
+        {}\
+        </body></html>\n",
+        location,
+        location,
+        unsafe { CStr::from_ptr(generated_on_str.as_ptr()) }
+            .to_str()
+            .unwrap()
+    );
+    let reply = CString::new(reply).unwrap();
+    conn.reply_length = reply.as_bytes().len() as libc::off_t;
+    conn.reply = reply.into_raw(); // TODO: freed by C
+
+    let headers = format!(
+        "HTTP/1.1 301 Moved Permanently\r\n\
+        Date: {}\r\n\
+        {}\
+        Location: {}\r\n\
+        {}\
+        Content-Length: {}\r\n\
+        Content-Type: text/html; charset=UTF-8\r\n\
+        \r\n",
+        unsafe { CStr::from_ptr(date.as_ptr()) }.to_str().unwrap(),
+        server_hdr,
+        location,
+        keep_alive_field.to_str().unwrap(),
+        conn.reply_length,
+    );
+    let headers = CString::new(headers).unwrap();
+    conn.header_length = headers.as_bytes().len() as bindings::size_t;
+    conn.header = headers.into_raw(); // TODO: freed by C
+
+    conn.reply_type = bindings::connection_REPLY_GENERATED;
+    conn.http_code = 301;
 }

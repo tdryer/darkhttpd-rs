@@ -1256,51 +1256,29 @@ static void default_reply(struct connection *conn,
     xvasprintf(&reason, format, va);
     va_end(va);
 
-    /* C wrapper just deals with formatting the reason. */
+    /* C wrapper just deals with formatting. */
     default_reply_impl(&srv, conn, errcode, errname, reason);
 
     free(reason);
 }
 
+extern void redirect_impl(const struct server *srv,
+        struct connection *conn, const char *location);
+
 static void redirect(struct connection *conn, const char *format, ...)
     __printflike(2, 3);
 static void redirect(struct connection *conn, const char *format, ...) {
-    char *where, date[DATE_LEN];
+    char *where;
     va_list va;
 
     va_start(va, format);
     xvasprintf(&where, format, va);
     va_end(va);
 
-    /* Only really need to calculate the date once. */
-    rfc1123_date(date, srv.now);
-
-    conn->reply_length = xasprintf(&(conn->reply),
-     "<html><head><title>301 Moved Permanently</title></head><body>\n"
-     "<h1>Moved Permanently</h1>\n"
-     "Moved to: <a href=\"%s\">%s</a>\n" /* where x 2 */
-     "<hr>\n"
-     "%s" /* generated on */
-     "</body></html>\n",
-     where, where, generated_on(&srv, _generated_on_buf, date));
-
-    char *keep_alive_field = keep_alive(conn);
-    conn->header_length = xasprintf(&(conn->header),
-     "HTTP/1.1 301 Moved Permanently\r\n"
-     "Date: %s\r\n"
-     "%s" /* server */
-     /* "Accept-Ranges: bytes\r\n" - not relevant here */
-     "Location: %s\r\n"
-     "%s" /* keep-alive */
-     "Content-Length: %llu\r\n"
-     "Content-Type: text/html; charset=UTF-8\r\n"
-     "\r\n",
-     date, srv.server_hdr, where, keep_alive_field, llu(conn->reply_length));
-    free_rust_cstring(keep_alive_field);
+    /* C wrapper just deals with formatting. */
+    redirect_impl(&srv, conn, where);
 
     free(where);
-    conn->reply_type = REPLY_GENERATED;
-    conn->http_code = 301;
 }
 
 /* Parses a single HTTP request field.  Returns string from end of [field] to
