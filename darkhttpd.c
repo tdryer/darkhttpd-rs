@@ -1232,7 +1232,7 @@ extern char *keep_alive(const struct connection *conn);
  */
 const unsigned int GENERATED_ON_LEN = 13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2;
 static char _generated_on_buf[13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2];
-extern const char *generated_on(const char *pkgname, int want_server_id,
+extern const char *generated_on(const struct server *srv, const char *pkgname,
         char dest[GENERATED_ON_LEN], const char date[DATE_LEN]);
 
 extern void default_reply_impl(const struct server *srv,
@@ -1278,7 +1278,7 @@ static void redirect(struct connection *conn, const char *format, ...) {
      "<hr>\n"
      "%s" /* generated on */
      "</body></html>\n",
-     where, where, generated_on(pkgname, srv.want_server_id, _generated_on_buf, date));
+     where, where, generated_on(&srv, pkgname, _generated_on_buf, date));
 
     char *keep_alive_field = keep_alive(conn);
     conn->header_length = xasprintf(&(conn->header),
@@ -1565,7 +1565,7 @@ static void generate_dir_listing(struct connection *conn, const char *path,
      "<hr>\n");
 
     rfc1123_date(date, srv.now);
-    append(listing, generated_on(pkgname, srv.want_server_id, _generated_on_buf, date));
+    append(listing, generated_on(&srv, pkgname, _generated_on_buf, date));
     append(listing, "</body>\n</html>\n");
 
     conn->reply = listing->str;
