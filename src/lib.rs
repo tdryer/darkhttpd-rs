@@ -463,32 +463,30 @@ fn parse_offset(data: &[u8]) -> (Option<libc::off_t>, &[u8]) {
 /// A default reply for any (erroneous) occasion.
 #[no_mangle]
 pub extern "C" fn default_reply_impl(
+    server: *const bindings::server,
     conn: *mut bindings::connection,
     errcode: libc::c_int,
     errname: *const libc::c_char,
     reason: *const libc::c_char,
-    server_hdr: *const libc::c_char,
-    auth_key: *const libc::c_char,
     pkgname: *const libc::c_char,
-    want_server_id: libc::c_int,
-    now: libc::time_t,
 ) {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
     let conn = unsafe { conn.as_mut().unwrap() };
     assert!(!errname.is_null());
     let errname = unsafe { CStr::from_ptr(errname).to_str().unwrap() };
     assert!(!reason.is_null());
     let reason = unsafe { CStr::from_ptr(reason).to_str().unwrap() };
-    assert!(!server_hdr.is_null());
-    let server_hdr = unsafe { CStr::from_ptr(server_hdr).to_str().unwrap() };
+    assert!(!server.server_hdr.is_null());
+    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
     let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
 
     let date = &mut [0 as libc::c_char; bindings::DATE_LEN as usize];
-    rfc1123_date(date.as_mut_ptr(), now);
+    rfc1123_date(date.as_mut_ptr(), server.now);
 
     let generated_on_str = &mut [0; bindings::GENERATED_ON_LEN as usize];
     generated_on(
         pkgname,
-        want_server_id,
+        server.want_server_id,
         generated_on_str.as_mut_ptr(),
         date.as_ptr(),
     );
@@ -528,7 +526,7 @@ pub extern "C" fn default_reply_impl(
         server_hdr,
         keep_alive_field.to_str().unwrap(),
         conn.reply_length,
-        if !auth_key.is_null() {
+        if !server.auth_key.is_null() {
             "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
         } else {
             ""

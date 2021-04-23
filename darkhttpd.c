@@ -1235,10 +1235,9 @@ static char _generated_on_buf[13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2];
 extern const char *generated_on(const char *pkgname, int want_server_id,
         char dest[GENERATED_ON_LEN], const char date[DATE_LEN]);
 
-extern void default_reply_impl(struct connection *conn, const int errcode,
-        const char *errname, const char *reason, const char *server_hdr,
-        const char *auth_key, const char *pkgname, int want_server_id,
-        time_t now);
+extern void default_reply_impl(const struct server *srv,
+        struct connection *conn, const int errcode, const char *errname,
+        const char *reason, const char *pkgname);
 
 /* A default reply for any (erroneous) occasion. */
 static void default_reply(struct connection *conn,
@@ -1254,8 +1253,7 @@ static void default_reply(struct connection *conn,
     va_end(va);
 
     /* C wrapper just deals with formatting the reason. */
-    default_reply_impl(conn, errcode, errname, reason, srv.server_hdr, srv.auth_key,
-            pkgname, srv.want_server_id, srv.now);
+    default_reply_impl(&srv, conn, errcode, errname, reason, pkgname);
 
     free(reason);
 }
