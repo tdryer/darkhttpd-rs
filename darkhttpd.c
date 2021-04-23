@@ -256,48 +256,85 @@ struct forward_mapping {
     const char *host, *target_url; /* These point at argv. */
 };
 
-static struct forward_mapping *forward_map = NULL;
-static size_t forward_map_size = 0;
-static const char *forward_all_url = NULL;
+/* Container for mutable static variables. */
+struct server {
+    struct forward_mapping *forward_map;
+    size_t forward_map_size;
+    const char *forward_all_url;
+    /* If a connection is idle for timeout_secs or more, it gets closed and
+     * removed from the connlist.
+     */
+    int timeout_secs;
+    const char *bindaddr;
+    uint16_t bindport;
+    int max_connections;
+    const char *index_name;
+    int no_listing;
+    int sockin; /* socket to accept connections from */
+    /* Time is cached in the event loop to avoid making an excessive number of
+     * gettimeofday() calls.
+     */
+    time_t now;
+#ifdef HAVE_INET6
+    int inet6;                  /* whether the socket uses inet6 */
+#endif
+    char *wwwroot;              /* a path name */
+    char *logfile_name;         /* NULL = no logging */
+    FILE *logfile;
+    char *pidfile_name;         /* NULL = no pidfile */
+    int want_chroot;
+    int want_daemon;
+    int want_accf;
+    int want_keepalive;
+    int want_server_id;
+    char *server_hdr;
+    char *auth_key;
+    uint64_t num_requests;
+    uint64_t total_in;
+    uint64_t total_out;
+    int accepting;              /* set to 0 to stop accept()ing */
+    int syslog_enabled;
+    volatile int running;       /* signal handler sets this to false */
+};
 
-/* If a connection is idle for timeout_secs or more, it gets closed and
- * removed from the connlist.
- */
-static int timeout_secs = 30;
-
-/* Time is cached in the event loop to avoid making an excessive number of
- * gettimeofday() calls.
- */
-static time_t now;
+static struct server srv = {
+    .forward_map = NULL,
+    .forward_map_size = 0,
+    .forward_all_url = NULL,
+    .timeout_secs = 30,
+    .bindaddr = NULL,
+    .bindport = 8080,           /* or 80 if running as root */
+    .max_connections = -1,      /* kern.ipc.somaxconn */
+    .index_name = "index.html",
+    .no_listing = 0,
+    .sockin = -1,
+    .now = 0,
+#ifdef HAVE_INET6
+    .inet6 = 0,
+#endif
+    .wwwroot = NULL,
+    .logfile_name = NULL,
+    .logfile = NULL,
+    .pidfile_name = NULL,
+    .want_chroot = 0,
+    .want_daemon = 0,
+    .want_accf = 0,
+    .want_keepalive = 1,
+    .want_server_id = 1,
+    .server_hdr = NULL,
+    .auth_key = NULL,
+    .num_requests = 0,
+    .total_in = 0,
+    .total_out = 0,
+    .accepting = 1,
+    .syslog_enabled = 0,
+    .running = 1,
+};
 
 /* To prevent a malformed request from eating up too much memory, die once the
  * request exceeds this many bytes:
  */
 #define MAX_REQUEST_LENGTH 4000
-
-/* Defaults can be overridden on the command-line */
-static const char *bindaddr;
-static uint16_t bindport = 8080;    /* or 80 if running as root */
-static int max_connections = -1;    /* kern.ipc.somaxconn */
-static const char *index_name = "index.html";
-static int no_listing = 0;
-
-static int sockin = -1;             /* socket to accept connections from */
-#ifdef HAVE_INET6
-static int inet6 = 0;               /* whether the socket uses inet6 */
-#endif
-static char *wwwroot = NULL;        /* a path name */
-static char *logfile_name = NULL;   /* NULL = no logging */
-static FILE *logfile = NULL;
-static char *pidfile_name = NULL;   /* NULL = no pidfile */
-static int want_chroot = 0, want_daemon = 0, want_accf = 0,
-           want_keepalive = 1, want_server_id = 1;
-static char *server_hdr = NULL;
-static char *auth_key = NULL;
-static uint64_t num_requests = 0, total_in = 0, total_out = 0;
-static int accepting = 1;           /* set to 0 to stop accept()ing */
-static int syslog_enabled = 0;
-static volatile int running = 1; /* signal handler sets this to false */
 
 #define INVALID_UID ((uid_t) -1)
 #define INVALID_GID ((gid_t) -1)
@@ -454,11 +491,11 @@ extern char *make_safe_url(char *const url);
 
 static void add_forward_mapping(const char * const host,
                                 const char * const target_url) {
-    forward_map_size++;
-    forward_map = xrealloc(forward_map,
-                           sizeof(*forward_map) * forward_map_size);
-    forward_map[forward_map_size - 1].host = host;
-    forward_map[forward_map_size - 1].target_url = target_url;
+    srv.forward_map_size++;
+    srv.forward_map = xrealloc(srv.forward_map,
+                           sizeof(*srv.forward_map) * srv.forward_map_size);
+    srv.forward_map[srv.forward_map_size - 1].host = host;
+    srv.forward_map[srv.forward_map_size - 1].target_url = target_url;
 }
 
 /*
@@ -501,7 +538,7 @@ static const char *url_content_type(const char *url) {
 
 static const char *get_address_text(const void *addr) {
 #ifdef HAVE_INET6
-    if (inet6) {
+    if (srv.inet6) {
         static char text_addr[INET6_ADDRSTRLEN];
         inet_ntop(AF_INET6, (const struct in6_addr *)addr, text_addr,
                   INET6_ADDRSTRLEN);
@@ -525,36 +562,36 @@ static void init_sockin(void) {
     int sockopt;
 
 #ifdef HAVE_INET6
-    if (inet6) {
+    if (srv.inet6) {
         memset(&addrin6, 0, sizeof(addrin6));
-        if (inet_pton(AF_INET6, bindaddr ? bindaddr : "::",
+        if (inet_pton(AF_INET6, srv.bindaddr ? srv.bindaddr : "::",
                       &addrin6.sin6_addr) == -1) {
             errx(1, "malformed --addr argument");
         }
-        sockin = socket(PF_INET6, SOCK_STREAM, 0);
+        srv.sockin = socket(PF_INET6, SOCK_STREAM, 0);
     } else
 #endif
     {
         memset(&addrin, 0, sizeof(addrin));
-        addrin.sin_addr.s_addr = bindaddr ? inet_addr(bindaddr) : INADDR_ANY;
+        addrin.sin_addr.s_addr = srv.bindaddr ? inet_addr(srv.bindaddr) : INADDR_ANY;
         if (addrin.sin_addr.s_addr == (in_addr_t)INADDR_NONE)
             errx(1, "malformed --addr argument");
-        sockin = socket(PF_INET, SOCK_STREAM, 0);
+        srv.sockin = socket(PF_INET, SOCK_STREAM, 0);
     }
 
-    if (sockin == -1)
+    if (srv.sockin == -1)
         err(1, "socket()");
 
     /* reuse address */
     sockopt = 1;
-    if (setsockopt(sockin, SOL_SOCKET, SO_REUSEADDR,
+    if (setsockopt(srv.sockin, SOL_SOCKET, SO_REUSEADDR,
                    &sockopt, sizeof(sockopt)) == -1)
         err(1, "setsockopt(SO_REUSEADDR)");
 
 #if 0
     /* disable Nagle since we buffer everything ourselves */
     sockopt = 1;
-    if (setsockopt(sockin, IPPROTO_TCP, TCP_NODELAY,
+    if (setsockopt(srv.sockin, IPPROTO_TCP, TCP_NODELAY,
             &sockopt, sizeof(sockopt)) == -1)
         err(1, "setsockopt(TCP_NODELAY)");
 #endif
@@ -564,49 +601,49 @@ static void init_sockin(void) {
      * one byte at a time (this is for debugging)
      */
     sockopt = 1;
-    if (setsockopt(sockin, SOL_SOCKET, SO_SNDBUF,
+    if (setsockopt(srv.sockin, SOL_SOCKET, SO_SNDBUF,
             &sockopt, sizeof(sockopt)) == -1)
         err(1, "setsockopt(SO_SNDBUF)");
 #endif
 
     /* bind socket */
 #ifdef HAVE_INET6
-    if (inet6) {
+    if (srv.inet6) {
         addrin6.sin6_family = AF_INET6;
-        addrin6.sin6_port = htons(bindport);
-        if (bind(sockin, (struct sockaddr *)&addrin6,
+        addrin6.sin6_port = htons(srv.bindport);
+        if (bind(srv.sockin, (struct sockaddr *)&addrin6,
                  sizeof(struct sockaddr_in6)) == -1)
-            err(1, "bind(port %u)", bindport);
+            err(1, "bind(port %u)", srv.bindport);
 
         addrin_len = sizeof(addrin6);
-        if (getsockname(sockin, (struct sockaddr *)&addrin6, &addrin_len) == -1)
+        if (getsockname(srv.sockin, (struct sockaddr *)&addrin6, &addrin_len) == -1)
             err(1, "getsockname()");
         printf("listening on: http://[%s]:%u/\n",
-            get_address_text(&addrin6.sin6_addr), bindport);
+            get_address_text(&addrin6.sin6_addr), srv.bindport);
     } else
 #endif
     {
         addrin.sin_family = (u_char)PF_INET;
-        addrin.sin_port = htons(bindport);
-        if (bind(sockin, (struct sockaddr *)&addrin,
+        addrin.sin_port = htons(srv.bindport);
+        if (bind(srv.sockin, (struct sockaddr *)&addrin,
                  sizeof(struct sockaddr_in)) == -1)
-            err(1, "bind(port %u)", bindport);
+            err(1, "bind(port %u)", srv.bindport);
         addrin_len = sizeof(addrin);
-        if (getsockname(sockin, (struct sockaddr *)&addrin, &addrin_len) == -1)
+        if (getsockname(srv.sockin, (struct sockaddr *)&addrin, &addrin_len) == -1)
             err(1, "getsockname()");
         printf("listening on: http://%s:%u/\n",
-            get_address_text(&addrin.sin_addr), bindport);
+            get_address_text(&addrin.sin_addr), srv.bindport);
     }
 
     /* listen on socket */
-    if (listen(sockin, max_connections) == -1)
+    if (listen(srv.sockin, srv.max_connections) == -1)
         err(1, "listen()");
 
     /* enable acceptfilter (this is only available on FreeBSD) */
-    if (want_accf) {
+    if (srv.want_accf) {
 #if defined(__FreeBSD__)
         struct accept_filter_arg filt = {"httpready", ""};
-        if (setsockopt(sockin, SOL_SOCKET, SO_ACCEPTFILTER,
+        if (setsockopt(srv.sockin, SOL_SOCKET, SO_ACCEPTFILTER,
                        &filt, sizeof(filt)) == -1)
             fprintf(stderr, "cannot enable acceptfilter: %s\n",
                 strerror(errno));
@@ -622,7 +659,7 @@ static void usage(const char *argv0) {
     printf("usage:\t%s /path/to/wwwroot [flags]\n\n", argv0);
     printf("flags:\t--port number (default: %u, or 80 if running as root)\n"
     "\t\tSpecifies which port to listen on for connections.\n"
-    "\t\tPass 0 to let the system choose any free port for you.\n\n", bindport);
+    "\t\tPass 0 to let the system choose any free port for you.\n\n", srv.bindport);
     printf("\t--addr ip (default: all)\n"
     "\t\tIf multiple interfaces are present, specifies\n"
     "\t\twhich one to bind the listening port to.\n\n");
@@ -638,7 +675,7 @@ static void usage(const char *argv0) {
     "\t\tDetach from the controlling terminal and run in the background.\n\n");
     printf("\t--index filename (default: %s)\n"
     "\t\tDefault file to serve when a directory is requested.\n\n",
-        index_name);
+        srv.index_name);
     printf("\t--no-listing\n"
     "\t\tDo not serve listing if directory is requested.\n\n");
     printf("\t--mimetypes filename (optional)\n"
@@ -672,7 +709,7 @@ static void usage(const char *argv0) {
     printf("\t--timeout secs (default: %d)\n"
     "\t\tIf a connection is idle for more than this many seconds,\n"
     "\t\tit will be closed. Set to zero to disable timeouts.\n\n",
-    timeout_secs);
+    srv.timeout_secs);
     printf("\t--auth username:password\n"
     "\t\tEnable basic authentication.\n\n");
 #ifdef HAVE_INET6
@@ -763,50 +800,50 @@ static void parse_commandline(const int argc, char *argv[]) {
     }
 
     if (getuid() == 0)
-        bindport = 80;
+        srv.bindport = 80;
 
-    wwwroot = xstrdup(argv[1]);
+    srv.wwwroot = xstrdup(argv[1]);
     /* Strip ending slash. */
-    len = strlen(wwwroot);
+    len = strlen(srv.wwwroot);
     if (len > 0)
-        if (wwwroot[len - 1] == '/')
-            wwwroot[len - 1] = '\0';
+        if (srv.wwwroot[len - 1] == '/')
+            srv.wwwroot[len - 1] = '\0';
 
     /* walk through the remainder of the arguments (if any) */
     for (i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--port") == 0) {
             if (++i >= argc)
                 errx(1, "missing number after --port");
-            bindport = (uint16_t)xstr_to_num(argv[i]);
+            srv.bindport = (uint16_t)xstr_to_num(argv[i]);
         }
         else if (strcmp(argv[i], "--addr") == 0) {
             if (++i >= argc)
                 errx(1, "missing ip after --addr");
-            bindaddr = argv[i];
+            srv.bindaddr = argv[i];
         }
         else if (strcmp(argv[i], "--maxconn") == 0) {
             if (++i >= argc)
                 errx(1, "missing number after --maxconn");
-            max_connections = (int)xstr_to_num(argv[i]);
+            srv.max_connections = (int)xstr_to_num(argv[i]);
         }
         else if (strcmp(argv[i], "--log") == 0) {
             if (++i >= argc)
                 errx(1, "missing filename after --log");
-            logfile_name = argv[i];
+            srv.logfile_name = argv[i];
         }
         else if (strcmp(argv[i], "--chroot") == 0) {
-            want_chroot = 1;
+            srv.want_chroot = 1;
         }
         else if (strcmp(argv[i], "--daemon") == 0) {
-            want_daemon = 1;
+            srv.want_daemon = 1;
         }
         else if (strcmp(argv[i], "--index") == 0) {
             if (++i >= argc)
                 errx(1, "missing filename after --index");
-            index_name = argv[i];
+            srv.index_name = argv[i];
         }
         else if (strcmp(argv[i], "--no-listing") == 0) {
-            no_listing = 1;
+            srv.no_listing = 1;
         }
         else if (strcmp(argv[i], "--mimetypes") == 0) {
             if (++i >= argc)
@@ -846,16 +883,16 @@ static void parse_commandline(const int argc, char *argv[]) {
         else if (strcmp(argv[i], "--pidfile") == 0) {
             if (++i >= argc)
                 errx(1, "missing filename after --pidfile");
-            pidfile_name = argv[i];
+            srv.pidfile_name = argv[i];
         }
         else if (strcmp(argv[i], "--no-keepalive") == 0) {
-            want_keepalive = 0;
+            srv.want_keepalive = 0;
         }
         else if (strcmp(argv[i], "--accf") == 0) {
-            want_accf = 1;
+            srv.want_accf = 1;
         }
         else if (strcmp(argv[i], "--syslog") == 0) {
-            syslog_enabled = 1;
+            srv.syslog_enabled = 1;
         }
         else if (strcmp(argv[i], "--forward") == 0) {
             const char *host, *url;
@@ -870,27 +907,27 @@ static void parse_commandline(const int argc, char *argv[]) {
         else if (strcmp(argv[i], "--forward-all") == 0) {
             if (++i >= argc)
                 errx(1, "missing url after --forward-all");
-            forward_all_url = argv[i];
+            srv.forward_all_url = argv[i];
         }
         else if (strcmp(argv[i], "--no-server-id") == 0) {
-            want_server_id = 0;
+            srv.want_server_id = 0;
         }
         else if (strcmp(argv[i], "--timeout") == 0) {
             if (++i >= argc)
                 errx(1, "missing number after --timeout");
-            timeout_secs = (int)xstr_to_num(argv[i]);
+            srv.timeout_secs = (int)xstr_to_num(argv[i]);
         }
         else if (strcmp(argv[i], "--auth") == 0) {
             if (++i >= argc || strchr(argv[i], ':') == NULL)
                 errx(1, "missing 'user:pass' after --auth");
 
             char *key = base64_encode(argv[i]);
-            xasprintf(&auth_key, "Basic %s", key);
+            xasprintf(&srv.auth_key, "Basic %s", key);
             free(key);
         }
 #ifdef HAVE_INET6
         else if (strcmp(argv[i], "--ipv6") == 0) {
-            inet6 = 1;
+            srv.inet6 = 1;
         }
 #endif
         else
@@ -904,7 +941,7 @@ static struct connection *new_connection(void) {
 
     conn->socket = -1;
     memset(&conn->client, 0, sizeof(conn->client));
-    conn->last_active = now;
+    conn->last_active = srv.now;
     conn->request = NULL;
     conn->request_length = 0;
     conn->method = NULL;
@@ -950,21 +987,21 @@ static void accept_connection(void) {
     int fd;
 
 #ifdef HAVE_INET6
-    if (inet6) {
+    if (srv.inet6) {
         sin_size = sizeof(addrin6);
         memset(&addrin6, 0, sin_size);
-        fd = accept(sockin, (struct sockaddr *)&addrin6, &sin_size);
+        fd = accept(srv.sockin, (struct sockaddr *)&addrin6, &sin_size);
     } else
 #endif
     {
         sin_size = sizeof(addrin);
         memset(&addrin, 0, sin_size);
-        fd = accept(sockin, (struct sockaddr *)&addrin, &sin_size);
+        fd = accept(srv.sockin, (struct sockaddr *)&addrin, &sin_size);
     }
 
     if (fd == -1) {
         /* Failed to accept, but try to keep serving existing connections. */
-        if (errno == EMFILE || errno == ENFILE) accepting = 0;
+        if (errno == EMFILE || errno == ENFILE) srv.accepting = 0;
         warn("accept()");
         return;
     }
@@ -976,7 +1013,7 @@ static void accept_connection(void) {
     conn->state = RECV_REQUEST;
 
 #ifdef HAVE_INET6
-    if (inet6) {
+    if (srv.inet6) {
         conn->client = addrin6.sin6_addr;
     } else
 #endif
@@ -1038,7 +1075,7 @@ static void log_connection(const struct connection *conn) {
     char *safe_method, *safe_url, *safe_referer, *safe_user_agent,
     dest[CLF_DATE_LEN];
 
-    if (logfile == NULL)
+    if (srv.logfile == NULL)
         return;
     if (conn->http_code == 0)
         return; /* invalid - died in request */
@@ -1060,10 +1097,10 @@ static void log_connection(const struct connection *conn) {
     make_safe(user_agent);
 
 #define use_safe(x) safe_##x ? safe_##x : ""
-  if (syslog_enabled) {
+  if (srv.syslog_enabled) {
     syslog(LOG_INFO, "%s - - %s \"%s %s HTTP/1.1\" %d %llu \"%s\" \"%s\"\n",
         get_address_text(&conn->client),
-        clf_date(dest, now),
+        clf_date(dest, srv.now),
         use_safe(method),
         use_safe(url),
         conn->http_code,
@@ -1072,9 +1109,9 @@ static void log_connection(const struct connection *conn) {
         use_safe(user_agent)
         );
   } else {
-    fprintf(logfile, "%s - - %s \"%s %s HTTP/1.1\" %d %llu \"%s\" \"%s\"\n",
+    fprintf(srv.logfile, "%s - - %s \"%s %s HTTP/1.1\" %d %llu \"%s\" \"%s\"\n",
         get_address_text(&conn->client),
-        clf_date(dest, now),
+        clf_date(dest, srv.now),
         use_safe(method),
         use_safe(url),
         conn->http_code,
@@ -1082,7 +1119,7 @@ static void log_connection(const struct connection *conn) {
         use_safe(referer),
         use_safe(user_agent)
         );
-    fflush(logfile);
+    fflush(srv.logfile);
   }    
 #define free_safe(x) if (safe_##x) free(safe_##x)
 
@@ -1111,7 +1148,7 @@ static void free_connection(struct connection *conn) {
     if (conn->reply != NULL && !conn->reply_dont_free) free(conn->reply);
     if (conn->reply_fd != -1) xclose(conn->reply_fd);
     /* If we ran out of sockets, try to resume accepting. */
-    accepting = 1;
+    srv.accepting = 1;
 }
 
 /* Recycle a finished connection for HTTP/1.1 Keep-Alive. */
@@ -1165,8 +1202,8 @@ static void strntoupper(char *str, const size_t length) {
  * marked as DONE and killed off in httpd_poll().
  */
 static void poll_check_timeout(struct connection *conn) {
-    if (timeout_secs > 0) {
-        if (now - conn->last_active >= timeout_secs) {
+    if (srv.timeout_secs > 0) {
+        if (srv.now - conn->last_active >= srv.timeout_secs) {
             if (debug)
                 printf("poll_check_timeout(%d) closing connection\n",
                        conn->socket);
@@ -1217,8 +1254,8 @@ static void default_reply(struct connection *conn,
     va_end(va);
 
     /* C wrapper just deals with formatting the reason. */
-    default_reply_impl(conn, errcode, errname, reason, server_hdr, auth_key,
-            pkgname, want_server_id, now);
+    default_reply_impl(conn, errcode, errname, reason, srv.server_hdr, srv.auth_key,
+            pkgname, srv.want_server_id, srv.now);
 
     free(reason);
 }
@@ -1234,7 +1271,7 @@ static void redirect(struct connection *conn, const char *format, ...) {
     va_end(va);
 
     /* Only really need to calculate the date once. */
-    rfc1123_date(date, now);
+    rfc1123_date(date, srv.now);
 
     conn->reply_length = xasprintf(&(conn->reply),
      "<html><head><title>301 Moved Permanently</title></head><body>\n"
@@ -1243,7 +1280,7 @@ static void redirect(struct connection *conn, const char *format, ...) {
      "<hr>\n"
      "%s" /* generated on */
      "</body></html>\n",
-     where, where, generated_on(pkgname, want_server_id, _generated_on_buf, date));
+     where, where, generated_on(pkgname, srv.want_server_id, _generated_on_buf, date));
 
     char *keep_alive_field = keep_alive(conn);
     conn->header_length = xasprintf(&(conn->header),
@@ -1256,7 +1293,7 @@ static void redirect(struct connection *conn, const char *format, ...) {
      "Content-Length: %llu\r\n"
      "Content-Type: text/html; charset=UTF-8\r\n"
      "\r\n",
-     date, server_hdr, where, keep_alive_field, llu(conn->reply_length));
+     date, srv.server_hdr, where, keep_alive_field, llu(conn->reply_length));
     free_rust_cstring(keep_alive_field);
 
     free(where);
@@ -1351,7 +1388,7 @@ static int parse_request(struct connection *conn) {
     }
 
     /* cmdline flag can be used to deny keep-alive */
-    if (!want_keepalive)
+    if (!srv.want_keepalive)
         conn->conn_close = 1;
 
     /* parse important fields */
@@ -1529,8 +1566,8 @@ static void generate_dir_listing(struct connection *conn, const char *path,
      "</pre></tt>\n"
      "<hr>\n");
 
-    rfc1123_date(date, now);
-    append(listing, generated_on(pkgname, want_server_id, _generated_on_buf, date));
+    rfc1123_date(date, srv.now);
+    append(listing, generated_on(pkgname, srv.want_server_id, _generated_on_buf, date));
     append(listing, "</body>\n</html>\n");
 
     conn->reply = listing->str;
@@ -1547,7 +1584,7 @@ static void generate_dir_listing(struct connection *conn, const char *path,
      "Content-Length: %llu\r\n"
      "Content-Type: text/html; charset=UTF-8\r\n"
      "\r\n",
-     date, server_hdr, keep_alive_field, llu(conn->reply_length));
+     date, srv.server_hdr, keep_alive_field, llu(conn->reply_length));
     free_rust_cstring(keep_alive_field);
 
     conn->reply_type = REPLY_GENERATED;
@@ -1578,15 +1615,15 @@ static void process_get(struct connection *conn) {
     }
 
     /* test the host against web forward options */
-    if (forward_map) {
+    if (srv.forward_map) {
         char *host = parse_field(conn, "Host: ");
         if (host) {
             size_t i;
             if (debug)
                 printf("host=\"%s\"\n", host);
-            for (i = 0; i < forward_map_size; i++) {
-                if (strcasecmp(forward_map[i].host, host) == 0) {
-                    forward_to = forward_map[i].target_url;
+            for (i = 0; i < srv.forward_map_size; i++) {
+                if (strcasecmp(srv.forward_map[i].host, host) == 0) {
+                    forward_to = srv.forward_map[i].target_url;
                     break;
                 }
             }
@@ -1594,7 +1631,7 @@ static void process_get(struct connection *conn) {
         }
     }
     if (!forward_to) {
-        forward_to = forward_all_url;
+        forward_to = srv.forward_all_url;
     }
     if (forward_to) {
         redirect(conn, "%s%s", forward_to, decoded_url);
@@ -1604,10 +1641,10 @@ static void process_get(struct connection *conn) {
 
     /* does it end in a slash? serve up url/index_name */
     if (decoded_url[strlen(decoded_url)-1] == '/') {
-        xasprintf(&target, "%s%s%s", wwwroot, decoded_url, index_name);
+        xasprintf(&target, "%s%s%s", srv.wwwroot, decoded_url, srv.index_name);
         if (!file_exists(target)) {
             free(target);
-            if (no_listing) {
+            if (srv.no_listing) {
                 free_rust_cstring(decoded_url);
                 /* Return 404 instead of 403 to make --no-listing
                  * indistinguishable from the directory not existing.
@@ -1617,17 +1654,17 @@ static void process_get(struct connection *conn) {
                     "The URL you requested was not found.");
                 return;
             }
-            xasprintf(&target, "%s%s", wwwroot, decoded_url);
+            xasprintf(&target, "%s%s", srv.wwwroot, decoded_url);
             generate_dir_listing(conn, target, decoded_url);
             free(target);
             free_rust_cstring(decoded_url);
             return;
         }
-        mimetype = url_content_type(index_name);
+        mimetype = url_content_type(srv.index_name);
     }
     else {
         /* points to a file */
-        xasprintf(&target, "%s%s", wwwroot, decoded_url);
+        xasprintf(&target, "%s%s", srv.wwwroot, decoded_url);
         mimetype = url_content_type(decoded_url);
     }
     free_rust_cstring(decoded_url);
@@ -1690,7 +1727,7 @@ static void process_get(struct connection *conn) {
          "Accept-Ranges: bytes\r\n"
          "%s" /* keep-alive */
          "\r\n",
-         rfc1123_date(date, now), server_hdr, keep_alive_field);
+         rfc1123_date(date, srv.now), srv.server_hdr, keep_alive_field);
         free_rust_cstring(keep_alive_field);
         conn->reply_length = 0;
         conn->reply_type = REPLY_GENERATED;
@@ -1758,7 +1795,7 @@ static void process_get(struct connection *conn) {
             "Last-Modified: %s\r\n"
             "\r\n"
             ,
-            rfc1123_date(date, now), server_hdr, keep_alive_field,
+            rfc1123_date(date, srv.now), srv.server_hdr, keep_alive_field,
             llu(conn->reply_length), llu(from), llu(to),
             llu(filestat.st_size), mimetype, lastmod
         );
@@ -1783,7 +1820,7 @@ static void process_get(struct connection *conn) {
             "Last-Modified: %s\r\n"
             "\r\n"
             ,
-            rfc1123_date(date, now), server_hdr, keep_alive_field,
+            rfc1123_date(date, srv.now), srv.server_hdr, keep_alive_field,
             llu(conn->reply_length), mimetype, lastmod
         );
         free_rust_cstring(keep_alive_field);
@@ -1793,16 +1830,16 @@ static void process_get(struct connection *conn) {
 
 /* Process a request: build the header and reply, advance state. */
 static void process_request(struct connection *conn) {
-    num_requests++;
+    srv.num_requests++;
 
     if (!parse_request(conn)) {
         default_reply(conn, 400, "Bad Request",
             "You sent a request that the server couldn't understand.");
     }
     /* fail if: (auth_enabled) AND (client supplied invalid credentials) */
-    else if (auth_key != NULL &&
+    else if (srv.auth_key != NULL &&
             (conn->authorization == NULL ||
-             strcmp(conn->authorization, auth_key)))
+             strcmp(conn->authorization, srv.auth_key)))
     {
         default_reply(conn, 401, "Unauthorized",
             "Access denied due to invalid credentials.");
@@ -1850,7 +1887,7 @@ static void poll_recv_request(struct connection *conn) {
         conn->state = DONE;
         return;
     }
-    conn->last_active = now;
+    conn->last_active = srv.now;
 
     /* append to conn->request */
     assert(recvd > 0);
@@ -1859,7 +1896,7 @@ static void poll_recv_request(struct connection *conn) {
     memcpy(conn->request+conn->request_length, buf, (size_t)recvd);
     conn->request_length += (size_t)recvd;
     conn->request[conn->request_length] = 0;
-    total_in += (size_t)recvd;
+    srv.total_in += (size_t)recvd;
 
     /* process request if we have all of it */
     if ((conn->request_length > 2) &&
@@ -1894,7 +1931,7 @@ static void poll_send_header(struct connection *conn) {
                 conn->header + conn->header_sent,
                 conn->header_length - conn->header_sent,
                 0);
-    conn->last_active = now;
+    conn->last_active = srv.now;
     if (debug)
         printf("poll_send_header(%d) sent %d bytes\n",
                conn->socket, (int)sent);
@@ -1914,7 +1951,7 @@ static void poll_send_header(struct connection *conn) {
     assert(sent > 0);
     conn->header_sent += (size_t)sent;
     conn->total_sent += (size_t)sent;
-    total_out += (size_t)sent;
+    srv.total_out += (size_t)sent;
 
     /* check if we're done sending header */
     if (conn->header_sent == conn->header_length) {
@@ -2017,7 +2054,7 @@ static void poll_send_reply(struct connection *conn)
             printf("send_from_file returned %lld (errno=%d %s)\n",
                 (long long)sent, errno, strerror(errno));
     }
-    conn->last_active = now;
+    conn->last_active = srv.now;
     if (debug)
         printf("poll_send_reply(%d) sent %d: %llu+[%llu-%llu] of %llu\n",
                conn->socket, (int)sent, llu(conn->reply_start),
@@ -2045,7 +2082,7 @@ static void poll_send_reply(struct connection *conn)
     }
     conn->reply_sent += sent;
     conn->total_sent += (size_t)sent;
-    total_out += (size_t)sent;
+    srv.total_out += (size_t)sent;
 
     /* check if we're done sending */
     if (conn->reply_sent == conn->reply_length)
@@ -2062,7 +2099,7 @@ static void httpd_poll(void) {
     int bother_with_timeout = 0;
     struct timeval timeout, t0, t1;
 
-    timeout.tv_sec = timeout_secs;
+    timeout.tv_sec = srv.timeout_secs;
     timeout.tv_usec = 0;
 
     FD_ZERO(&recv_set);
@@ -2073,7 +2110,7 @@ static void httpd_poll(void) {
 #define MAX_FD_SET(sock, fdset) do { FD_SET(sock,fdset); \
                                 max_fd = (max_fd<sock) ? sock : max_fd; } \
                                 while (0)
-    if (accepting) MAX_FD_SET(sockin, &recv_set);
+    if (srv.accepting) MAX_FD_SET(srv.sockin, &recv_set);
 
     LIST_FOREACH_SAFE(conn, &connlist, entries, next) {
         switch (conn->state) {
@@ -2134,10 +2171,10 @@ static void httpd_poll(void) {
     }
 
     /* update time */
-    now = time(NULL);
+    srv.now = time(NULL);
 
     /* poll connections that select() says need attention */
-    if (FD_ISSET(sockin, &recv_set))
+    if (FD_ISSET(srv.sockin, &recv_set))
         accept_connection();
 
     LIST_FOREACH_SAFE(conn, &connlist, entries, next) {
@@ -2248,7 +2285,7 @@ static int pidfile_fd = -1;
 #define PIDFILE_MODE 0600
 
 static void pidfile_remove(void) {
-    if (unlink(pidfile_name) == -1)
+    if (unlink(srv.pidfile_name) == -1)
         err(1, "unlink(pidfile) failed");
  /* if (flock(pidfile_fd, LOCK_UN) == -1)
         err(1, "unlock(pidfile) failed"); */
@@ -2261,7 +2298,7 @@ static int pidfile_read(void) {
     int fd, i;
     long long pid;
 
-    fd = open(pidfile_name, O_RDONLY);
+    fd = open(srv.pidfile_name, O_RDONLY);
     if (fd == -1)
         err(1, " after create failed");
 
@@ -2282,13 +2319,13 @@ static void pidfile_create(void) {
     char pidstr[16];
 
     /* Open the PID file and obtain exclusive lock. */
-    fd = open(pidfile_name,
+    fd = open(srv.pidfile_name,
         O_WRONLY | O_CREAT | O_EXLOCK | O_TRUNC | O_NONBLOCK, PIDFILE_MODE);
     if (fd == -1) {
         if ((errno == EWOULDBLOCK) || (errno == EEXIST))
             errx(1, "daemon already running with PID %d", pidfile_read());
         else
-            err(1, "can't create pidfile %s", pidfile_name);
+            err(1, "can't create pidfile %s", srv.pidfile_name);
     }
     pidfile_fd = fd;
 
@@ -2311,7 +2348,7 @@ static void pidfile_create(void) {
 
 /* Close all sockets and FILEs and exit. */
 static void stop_running(int sig unused) {
-    running = 0;
+    srv.running = 0;
 }
 
 /* Set the keep alive field. */
@@ -2322,23 +2359,23 @@ int main(int argc, char **argv) {
     printf("%s, %s.\n", pkgname, copyright);
     parse_default_extension_map();
     parse_commandline(argc, argv);
-    set_keep_alive_field(timeout_secs);
-    if (want_server_id)
-        xasprintf(&server_hdr, "Server: %s\r\n", pkgname);
+    set_keep_alive_field(srv.timeout_secs);
+    if (srv.want_server_id)
+        xasprintf(&srv.server_hdr, "Server: %s\r\n", pkgname);
     else
-        server_hdr = xstrdup("");
+        srv.server_hdr = xstrdup("");
     init_sockin();
 
     /* open logfile */
-    if (logfile_name == NULL)
-        logfile = stdout;
+    if (srv.logfile_name == NULL)
+        srv.logfile = stdout;
     else {
-        logfile = fopen(logfile_name, "ab");
-        if (logfile == NULL)
-            err(1, "opening logfile: fopen(\"%s\")", logfile_name);
+        srv.logfile = fopen(srv.logfile_name, "ab");
+        if (srv.logfile == NULL)
+            err(1, "opening logfile: fopen(\"%s\")", srv.logfile_name);
     }
 
-    if (want_daemon)
+    if (srv.want_daemon)
         daemonize_start();
 
     /* signals */
@@ -2350,14 +2387,14 @@ int main(int argc, char **argv) {
         err(1, "signal(SIGTERM)");
 
     /* security */
-    if (want_chroot) {
+    if (srv.want_chroot) {
         tzset(); /* read /etc/localtime before we chroot */
-        if (chdir(wwwroot) == -1)
-            err(1, "chdir(%s)", wwwroot);
-        if (chroot(wwwroot) == -1)
-            err(1, "chroot(%s)", wwwroot);
-        printf("chrooted to `%s'\n", wwwroot);
-        wwwroot[0] = '\0'; /* empty string */
+        if (chdir(srv.wwwroot) == -1)
+            err(1, "chdir(%s)", srv.wwwroot);
+        if (chroot(srv.wwwroot) == -1)
+            err(1, "chroot(%s)", srv.wwwroot);
+        printf("chrooted to `%s'\n", srv.wwwroot);
+        srv.wwwroot[0] = '\0'; /* empty string */
     }
     if (drop_gid != INVALID_GID) {
         gid_t list[1];
@@ -2375,17 +2412,17 @@ int main(int argc, char **argv) {
     }
 
     /* create pidfile */
-    if (pidfile_name) pidfile_create();
+    if (srv.pidfile_name) pidfile_create();
 
-    if (want_daemon) daemonize_finish();
+    if (srv.want_daemon) daemonize_finish();
 
     /* main loop */
-    while (running) httpd_poll();
+    while (srv.running) httpd_poll();
 
     /* clean exit */
-    xclose(sockin);
-    if (logfile != NULL) fclose(logfile);
-    if (pidfile_name) pidfile_remove();
+    xclose(srv.sockin);
+    if (srv.logfile != NULL) fclose(srv.logfile);
+    if (srv.pidfile_name) pidfile_remove();
 
     /* close and free connections */
     {
@@ -2400,11 +2437,11 @@ int main(int argc, char **argv) {
 
     /* free the mallocs */
     {
-        if (forward_map)
-            free(forward_map);
-        free(wwwroot);
-        free(server_hdr);
-        free(auth_key);
+        if (srv.forward_map)
+            free(srv.forward_map);
+        free(srv.wwwroot);
+        free(srv.server_hdr);
+        free(srv.auth_key);
     }
 
     /* usage stats */
@@ -2418,8 +2455,8 @@ int main(int argc, char **argv) {
             (unsigned int)r.ru_stime.tv_sec,
                 (unsigned int)(r.ru_stime.tv_usec/10000)
         );
-        printf("Requests: %llu\n", llu(num_requests));
-        printf("Bytes: %llu in, %llu out\n", llu(total_in), llu(total_out));
+        printf("Requests: %llu\n", llu(srv.num_requests));
+        printf("Bytes: %llu in, %llu out\n", llu(srv.total_in), llu(srv.total_out));
     }
 
     return 0;

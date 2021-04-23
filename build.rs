@@ -15,6 +15,7 @@ fn main() {
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .allowlist_type("connection")
+        .allowlist_type("server")
         .allowlist_var("DATE_LEN")
         .allowlist_var("GENERATED_ON_LEN")
         .generate()
