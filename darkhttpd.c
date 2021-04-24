@@ -1237,7 +1237,7 @@ extern char *keep_alive(const struct connection *conn);
 const unsigned int GENERATED_ON_LEN = 13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2;
 static char _generated_on_buf[13 + sizeof(pkgname) - 1 + 4 + DATE_LEN + 2];
 extern const char *generated_on(const struct server *srv,
-        char dest[GENERATED_ON_LEN], const char date[DATE_LEN]);
+        char dest[GENERATED_ON_LEN]);
 
 extern void default_reply_impl(const struct server *srv,
         struct connection *conn, const int errcode, const char *errname,
@@ -1547,7 +1547,7 @@ static void generate_dir_listing(struct connection *conn, const char *path,
      "<hr>\n");
 
     rfc1123_date(date, srv.now);
-    append(listing, generated_on(&srv, _generated_on_buf, date));
+    append(listing, generated_on(&srv, _generated_on_buf));
     append(listing, "</body>\n</html>\n");
 
     conn->reply = listing->str;
