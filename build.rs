@@ -17,7 +17,6 @@ fn main() {
         .allowlist_type("connection")
         .allowlist_type("server")
         .allowlist_var("DATE_LEN")
-        .allowlist_var("GENERATED_ON_LEN")
         .generate()
         .expect("Unable to generate bindings");
 
