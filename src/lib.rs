@@ -292,14 +292,6 @@ impl<'a> std::fmt::Display for UrlEncoded<'a> {
     }
 }
 
-#[test]
-fn url_encoded_works() {
-    assert_eq!(
-        UrlEncoded("escape(this)name\t").to_string(),
-        "escape%28this%29name%09"
-    );
-}
-
 /// Decode URL by converting %XX (where XX are hexadecimal digits) to the character it represents.
 /// Don't forget to free the return value.
 #[no_mangle]
@@ -700,4 +692,25 @@ pub extern "C" fn generate_dir_listing(
 
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = 200;
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn url_encoded_works() {
+        assert_eq!(
+            UrlEncoded("escape(this)name\t").to_string(),
+            "escape%28this%29name%09"
+        );
+    }
+
+    #[test]
+    fn html_escaped_works() {
+        assert_eq!(
+            HtmlEscaped("foo<>&'\"").to_string(),
+            "foo&lt;&gt;&amp;&apos;&quot;"
+        );
+    }
 }
