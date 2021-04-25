@@ -256,6 +256,8 @@ struct forward_mapping {
     const char *host, *target_url; /* These point at argv. */
 };
 
+static const char octet_stream[] = "application/octet-stream";
+
 /* Container for mutable static variables. */
 struct server {
     const char *pkgname;
@@ -297,6 +299,7 @@ struct server {
     int accepting;              /* set to 0 to stop accept()ing */
     int syslog_enabled;
     volatile int running;       /* signal handler sets this to false */
+    const char *default_mimetype;
 };
 
 static struct server srv = {
@@ -333,6 +336,7 @@ static struct server srv = {
     .accepting = 1,
     .syslog_enabled = 0,
     .running = 1,
+    .default_mimetype = octet_stream,
 };
 
 /* To prevent a malformed request from eating up too much memory, die once the
@@ -345,9 +349,6 @@ static struct server srv = {
 
 static uid_t drop_uid = INVALID_UID;
 static gid_t drop_gid = INVALID_GID;
-
-static const char octet_stream[] = "application/octet-stream";
-static const char *default_mimetype = octet_stream;
 
 /* Prototypes. */
 static void poll_recv_request(struct connection *conn);
@@ -446,11 +447,6 @@ static void add_forward_mapping(const char * const host,
     srv.forward_map[srv.forward_map_size - 1].target_url = target_url;
 }
 
-/*
- * Retrieves a mimetype from the mime_map.
- */
-extern const char *get_mimetype(const char *extension);
-
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.
  */
@@ -461,28 +457,7 @@ extern void parse_default_extension_map(void);
  */
 extern void parse_extension_map_file(const char *filename);
 
-static const char *url_content_type(const char *url) {
-    int period, urllen = (int)strlen(url);
-
-    // TODO(tdryer): Either compute this, or remove it.
-    size_t longest_ext = 255;
-
-    for (period = urllen - 1;
-         (period > 0) && (url[period] != '.') &&
-         (urllen - period - 1 <= (int)longest_ext);
-         period--)
-            ;
-
-    if ((period >= 0) && (url[period] == '.')) {
-        const char *mimetype = get_mimetype(url + period + 1);
-        if (mimetype != NULL) {
-            printf("got mimetype: %s", mimetype);
-            return mimetype;
-        }
-    }
-    /* else no period found in the string */
-    return default_mimetype;
-}
+extern const char *url_content_type(const struct server *srv, const char *url);
 
 static const char *get_address_text(const void *addr) {
 #ifdef HAVE_INET6
@@ -801,7 +776,7 @@ static void parse_commandline(const int argc, char *argv[]) {
         else if (strcmp(argv[i], "--default-mimetype") == 0) {
             if (++i >= argc)
                 errx(1, "missing string after --default-mimetype");
-            default_mimetype = argv[i];
+            srv.default_mimetype = argv[i];
         }
         else if (strcmp(argv[i], "--uid") == 0) {
             struct passwd *p;
@@ -1401,12 +1376,12 @@ static void process_get(struct connection *conn) {
             free_rust_cstring(decoded_url);
             return;
         }
-        mimetype = url_content_type(srv.index_name);
+        mimetype = url_content_type(&srv, srv.index_name);
     }
     else {
         /* points to a file */
         xasprintf(&target, "%s%s", srv.wwwroot, decoded_url);
-        mimetype = url_content_type(decoded_url);
+        mimetype = url_content_type(&srv, decoded_url);
     }
     free_rust_cstring(decoded_url);
     if (debug)

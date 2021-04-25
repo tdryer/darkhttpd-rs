@@ -78,18 +78,26 @@ pub extern "C" fn parse_extension_map_file(filename: *const libc::c_char) {
     }
 }
 
-/// Retrieves a mimetype from the mime_map.
+/// Retrieves a mimetype for a URL.
 #[no_mangle]
-pub extern "C" fn get_mimetype(extension: *const libc::c_char) -> *const libc::c_char {
-    assert!(!extension.is_null());
-    let extension = unsafe { CStr::from_ptr(extension) };
+pub extern "C" fn url_content_type(
+    server: *const bindings::server,
+    url: *const libc::c_char,
+) -> *const libc::c_char {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    assert!(!url.is_null());
+    let url = unsafe { CStr::from_ptr(url).to_str().unwrap() };
+    let extension = match url.rsplit('.').next() {
+        Some(extension) => extension,
+        None => return server.default_mimetype,
+    };
     match MIME_MAP
         .lock()
         .expect("failed to lock MIME_MAP")
-        .get(extension)
+        .get(&CString::new(extension).unwrap())
     {
         Some(mimetype) => mimetype.as_ptr(),
-        None => std::ptr::null(),
+        None => server.default_mimetype,
     }
 }
 
