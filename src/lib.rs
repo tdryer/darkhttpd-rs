@@ -134,22 +134,17 @@ pub extern "C" fn set_keep_alive_field(timeout_secs: libc::c_int) {
     field.push_str(&format!("Keep-Alive: timeout={}\r\n", timeout_secs));
 }
 
-// TODO: No longer called from C
 /// Returns Connection or Keep-Alive header, depending on conn_close.
-#[no_mangle]
-pub extern "C" fn keep_alive(conn: *const bindings::connection) -> *mut libc::c_char {
-    let conn = unsafe { conn.as_ref().unwrap() };
+fn keep_alive(conn: &bindings::connection) -> String {
+    // TODO: We've made the keep alive field caching pretty useless by cloning the string each
+    // time. Return a reference once this can be a method?
     if conn.conn_close == 1 {
-        CString::new("Connection: close\r\n").unwrap().into_raw()
+        "Connection: close\r\n".to_string()
     } else {
-        CString::new(
-            KEEP_ALIVE_FIELD
-                .lock()
-                .expect("failed to lock KEEP_ALIVE_FIELD")
-                .as_bytes(),
-        )
-        .unwrap()
-        .into_raw()
+        KEEP_ALIVE_FIELD
+            .lock()
+            .expect("failed to lock KEEP_ALIVE_FIELD")
+            .clone()
     }
 }
 
@@ -529,7 +524,6 @@ fn default_reply(
 ) {
     assert!(!server.server_hdr.is_null());
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
 
     let reply = format!(
         "<html><head><title>{} {}</title></head><body>\n\
@@ -562,7 +556,7 @@ fn default_reply(
         errname,
         HttpDate(server.now),
         server_hdr,
-        keep_alive_field.to_str().unwrap(),
+        keep_alive(conn),
         conn.reply_length,
         if !server.auth_key.is_null() {
             "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
@@ -592,7 +586,6 @@ pub extern "C" fn redirect_impl(
     let location = unsafe { CStr::from_ptr(location).to_str().unwrap() };
     assert!(!server.server_hdr.is_null());
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
 
     let reply = format!(
         "<html><head><title>301 Moved Permanently</title></head><body>\n\
@@ -621,7 +614,7 @@ pub extern "C" fn redirect_impl(
         HttpDate(server.now),
         server_hdr,
         location,
-        keep_alive_field.to_str().unwrap(),
+        keep_alive(conn),
         conn.reply_length,
     );
     let headers = CString::new(headers).unwrap();
@@ -689,7 +682,6 @@ pub extern "C" fn generate_dir_listing(
     let decoded_url = unsafe { CStr::from_ptr(decoded_url).to_str().unwrap() };
     assert!(!server.server_hdr.is_null());
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
 
     let mut entries: Vec<_> = match std::fs::read_dir(path) {
         Ok(entries) => entries,
@@ -734,7 +726,7 @@ pub extern "C" fn generate_dir_listing(
         \r\n",
         HttpDate(server.now),
         server_hdr,
-        keep_alive_field.to_str().unwrap(),
+        keep_alive(conn),
         conn.reply_length,
     );
     let headers = CString::new(headers).unwrap();
@@ -756,7 +748,6 @@ fn file_exists(path: &str) -> bool {
 /// A not modified reply.
 fn not_modified(server: &bindings::server, conn: &mut bindings::connection) {
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
 
     let headers = format!(
         "HTTP/1.1 304 Not Modified\r\n\
@@ -767,7 +758,7 @@ fn not_modified(server: &bindings::server, conn: &mut bindings::connection) {
         \r\n",
         HttpDate(server.now),
         server_hdr,
-        keep_alive_field.to_str().unwrap(),
+        keep_alive(conn),
     );
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
@@ -858,7 +849,6 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
         .to_str()
         .unwrap();
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
     let url = unsafe { CStr::from_ptr(conn.url) }.to_str().unwrap();
 
     // strip query params
@@ -1015,7 +1005,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
             \r\n",
             HttpDate(server.now),
             server_hdr,
-            keep_alive_field.to_str().unwrap(),
+            keep_alive(conn),
             conn.reply_length,
             from,
             to,
@@ -1044,7 +1034,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
         \r\n",
         HttpDate(server.now),
         server_hdr,
-        keep_alive_field.to_str().unwrap(),
+        keep_alive(conn),
         conn.reply_length,
         mimetype,
         HttpDate(lastmod.try_into().unwrap())
