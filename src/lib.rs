@@ -520,6 +520,17 @@ pub extern "C" fn default_reply_impl(
     let errname = unsafe { CStr::from_ptr(errname).to_str().unwrap() };
     assert!(!reason.is_null());
     let reason = unsafe { CStr::from_ptr(reason).to_str().unwrap() };
+
+    default_reply(server, conn, errcode, errname, reason);
+}
+
+fn default_reply(
+    server: &bindings::server,
+    conn: &mut bindings::connection,
+    errcode: i32,
+    errname: &str,
+    reason: &str,
+) {
     assert!(!server.server_hdr.is_null());
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
     let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
@@ -566,7 +577,6 @@ pub extern "C" fn default_reply_impl(
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw(); // TODO: freed by C
-
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = errcode;
     conn.reply_start = 0; // Reset in case the request set a range.
@@ -688,9 +698,8 @@ pub extern "C" fn generate_dir_listing(
     let mut entries: Vec<_> = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(e) => {
-            let errname = CString::new("Internal Server Error").unwrap();
-            let reason = CString::new(format!("Couldn't list directory: {}", e)).unwrap();
-            default_reply_impl(server, conn, 500, errname.as_ptr(), reason.as_ptr());
+            let reason = format!("Couldn't list directory: {}", e);
+            default_reply(server, conn, 500, "Internal Server Error", &reason);
             return;
         }
     }
@@ -866,9 +875,8 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     let decoded_url = match make_safe_url_2(&decoded_url) {
         Some(decoded_url) => decoded_url,
         None => {
-            let errname = CString::new("Bad Request").unwrap();
-            let reason = CString::new(format!("You requested an invalid URL.")).unwrap();
-            default_reply_impl(server, conn, 400, errname.as_ptr(), reason.as_ptr());
+            let reason = format!("You requested an invalid URL.");
+            default_reply(server, conn, 400, "Bad Request", &reason);
             return;
         }
     };
@@ -891,9 +899,8 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
             if server.no_listing > 0 {
                 // Return 404 instead of 403 to make --no-listing indistinguishable from the
                 // directory not existing. i.e.: Don't leak information.
-                let errname = CString::new("Not Found").unwrap();
-                let reason = CString::new("The URL you requested was not found.").unwrap();
-                default_reply_impl(server, conn, 404, errname.as_ptr(), reason.as_ptr());
+                let reason = "The URL you requested was not found.";
+                default_reply(server, conn, 404, "Not Found", &reason);
                 // TODO: free decoded_url?
                 return;
             }
@@ -935,9 +942,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
                     format!("The URL you requested cannot be returned: {}.", e),
                 ),
             };
-            let errname = CString::new(errname).unwrap();
-            let reason = CString::new(reason).unwrap();
-            default_reply_impl(server, conn, errcode, errname.as_ptr(), reason.as_ptr());
+            default_reply(server, conn, errcode, errname, &reason);
             return;
         }
     };
@@ -945,9 +950,8 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     let metadata = match file.metadata() {
         Ok(metadata) => metadata,
         Err(e) => {
-            let errname = CString::new("Internal Server Error").unwrap();
-            let reason = CString::new(format!("fstat() failed: {}.", e)).unwrap();
-            default_reply_impl(server, conn, 500, errname.as_ptr(), reason.as_ptr());
+            let reason = format!("fstat() failed: {}.", e);
+            default_reply(server, conn, 500, "Internal Server Error", &reason);
             return;
         }
     };
@@ -962,9 +966,8 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
         return;
     } else if !metadata.is_file() {
         // TODO: Add test coverage
-        let errname = CString::new("Forbidden").unwrap();
-        let reason = CString::new("Not a regular file.").unwrap();
-        default_reply_impl(server, conn, 403, errname.as_ptr(), reason.as_ptr());
+        let reason = "Not a regular file.";
+        default_reply(server, conn, 403, "Forbidden", &reason);
         return;
     }
 
@@ -988,17 +991,16 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     // handle Range
     if let Some((to, from)) = get_range(&conn, metadata.len() as i64) {
         if from >= metadata.len() as i64 {
-            let errname = CString::new("Requested Range Not Satisfiable").unwrap();
-            let reason =
-                CString::new(format!("You requested a range outside of the file.")).unwrap();
-            default_reply_impl(server, conn, 416, errname.as_ptr(), reason.as_ptr());
+            let errname = "Requested Range Not Satisfiable";
+            let reason = format!("You requested a range outside of the file.");
+            default_reply(server, conn, 416, errname, &reason);
             return;
         }
 
         if to < from {
-            let errname = CString::new("Requested Range Not Satisfiable").unwrap();
-            let reason = CString::new(format!("You requested a backward range.")).unwrap();
-            default_reply_impl(server, conn, 416, errname.as_ptr(), reason.as_ptr());
+            let errname = "Requested Range Not Satisfiable";
+            let reason = format!("You requested a backward range.");
+            default_reply(server, conn, 416, errname, &reason);
             return;
         }
 
