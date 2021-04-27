@@ -24,6 +24,7 @@ macro_rules! abort {
     })
 }
 
+// TODO: Use String instead of CString
 // TODO: Remove these statics when we can propagate them instead.
 static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
     let mime_map = HashMap::new();
@@ -79,27 +80,22 @@ pub extern "C" fn parse_extension_map_file(filename: *const libc::c_char) {
     }
 }
 
-// TODO: No longer called from C
 /// Retrieves a mimetype for a URL.
-#[no_mangle]
-pub extern "C" fn url_content_type(
-    server: *const bindings::server,
-    url: *const libc::c_char,
-) -> *const libc::c_char {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    assert!(!url.is_null());
-    let url = unsafe { CStr::from_ptr(url).to_str().unwrap() };
+fn url_content_type(server: &bindings::server, url: &str) -> String {
+    let default_mimetype = unsafe { CStr::from_ptr(server.default_mimetype) }
+        .to_str()
+        .unwrap();
     let extension = match url.rsplit('.').next() {
         Some(extension) => extension,
-        None => return server.default_mimetype,
+        None => return default_mimetype.to_string(),
     };
     match MIME_MAP
         .lock()
         .expect("failed to lock MIME_MAP")
         .get(&CString::new(extension).unwrap())
     {
-        Some(mimetype) => mimetype.as_ptr(),
-        None => server.default_mimetype,
+        Some(mimetype) => mimetype.as_c_str().to_str().unwrap().to_string(),
+        None => default_mimetype.to_string(),
     }
 }
 
@@ -910,12 +906,12 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
             generate_dir_listing(server, conn, target.as_ptr(), decoded_url.as_ptr());
             return;
         } else {
-            mimetype = url_content_type(server, server.index_name);
+            let index_name = unsafe { CStr::from_ptr(server.index_name).to_str().unwrap() };
+            mimetype = url_content_type(server, index_name);
         }
     } else {
         target = format!("{}{}", wwwroot, decoded_url);
-        let decoded_url = CString::new(decoded_url).unwrap();
-        mimetype = url_content_type(server, decoded_url.as_ptr());
+        mimetype = url_content_type(server, &decoded_url);
     }
 
     let file = match std::fs::OpenOptions::new()
@@ -1024,7 +1020,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
             from,
             to,
             metadata.len(),
-            unsafe { CStr::from_ptr(mimetype) }.to_str().unwrap(),
+            mimetype,
             HttpDate(lastmod.try_into().unwrap())
         );
         let headers = CString::new(headers).unwrap();
@@ -1050,7 +1046,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
         server_hdr,
         keep_alive_field.to_str().unwrap(),
         conn.reply_length,
-        unsafe { CStr::from_ptr(mimetype) }.to_str().unwrap(),
+        mimetype,
         HttpDate(lastmod.try_into().unwrap())
     );
     let headers = CString::new(headers).unwrap();
