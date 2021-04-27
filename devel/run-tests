@@ -134,15 +134,6 @@ runtests() {
 # Build Rust library ahead of time.
 cargo build || exit 1
 
-# Unit test.
-echo "===> test_make_safe_uri"
-$CC -g -O2 -fsanitize=address -fsanitize=undefined \
-  test_make_safe_uri.c $RUST_LIB -o test_make_safe_uri || exit 1
-if ./test_make_safe_uri | egrep '^FAIL:'; then
-  echo test_make_safe_uri failed >&2
-  exit 1
-fi
-
 # Check that the code builds with various defines.
 echo "===> building without -DDEBUG"
 $CC -O2 -Wall ../darkhttpd.c $RUST_LIB || exit 1

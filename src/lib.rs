@@ -1076,8 +1076,33 @@ mod test {
 
     #[test]
     fn make_safe_url_works() {
-        assert_eq!(make_safe_url_2("/foo/../.."), None);
-        assert_eq!(make_safe_url_2("/foo/.."), Some("/".to_string()));
-        assert_eq!(make_safe_url_2("/"), Some("/".to_string()));
+        let test_cases = &[
+            ("", None),
+            ("/", Some("/")),
+            ("/.", Some("/")),
+            ("/./", Some("/")),
+            ("/.d", Some("/.d")),
+            ("//.d", Some("/.d")),
+            ("/../", None),
+            ("/abc", Some("/abc")),
+            ("/abc/", Some("/abc/")),
+            ("/abc/.", Some("/abc")),
+            ("/abc/./", Some("/abc/")),
+            ("/abc/..", Some("/")),
+            ("/abc/../", Some("/")),
+            ("/abc/../def", Some("/def")),
+            ("/abc/../def/", Some("/def/")),
+            ("/abc/../def/..", Some("/")),
+            ("/abc/../def/../", Some("/")),
+            ("/abc/../def/../../", None),
+            ("/abc/../def/.././", Some("/")),
+            ("/abc/../def/.././../", None),
+            ("/a/b/c/../../d/", Some("/a/d/")),
+            ("/a/b/../../../c", None),
+            ("//a///b////c/////", Some("/a/b/c/")),
+        ];
+        for (url, expected) in test_cases {
+            assert_eq!(make_safe_url_2(url), expected.map(|s| s.to_string()));
+        }
     }
 }
