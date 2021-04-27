@@ -807,6 +807,42 @@ fn get_forward_to_url(
     forward_to_url
 }
 
+/// Return range based on header values and file length.
+fn get_range(conn: &bindings::connection, file_len: i64) -> Option<(i64, i64)> {
+    if conn.range_begin_given > 0 || conn.range_end_given > 0 {
+        let mut to;
+        let mut from;
+        if conn.range_begin_given > 0 && conn.range_end_given > 0 {
+            // 100-200
+            from = conn.range_begin;
+            to = conn.range_end;
+
+            // clamp end to filestat.st_size-1
+            if to > file_len {
+                to = file_len - 1;
+            }
+        } else if conn.range_begin_given > 0 && conn.range_end_given == 0 {
+            // 100- :: yields 100 to end
+            from = conn.range_begin;
+            to = file_len - 1;
+        } else if conn.range_begin_given == 0 && conn.range_end_given > 0 {
+            // -200 :: yields last 200
+            to = file_len - 1;
+            from = to - conn.range_end + 1;
+
+            // clamp start
+            if from < 0 {
+                from = 0;
+            }
+        } else {
+            abort!("internal error - from/to mismatch");
+        }
+        Some((to, from))
+    } else {
+        None
+    }
+}
+
 /// Process a GET/HEAD request.
 #[no_mangle]
 pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindings::connection) {
@@ -950,36 +986,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     }
 
     // handle Range
-    // TODO: Extract this into a function
-    if conn.range_begin_given > 0 || conn.range_end_given > 0 {
-        let mut to;
-        let mut from;
-        if conn.range_begin_given > 0 && conn.range_end_given > 0 {
-            // 100-200
-            from = conn.range_begin;
-            to = conn.range_end;
-
-            // clamp end to filestat.st_size-1
-            if to > (metadata.len() as i64 - 1) {
-                to = metadata.len() as i64 - 1;
-            }
-        } else if conn.range_begin_given > 0 && conn.range_end_given == 0 {
-            // 100- :: yields 100 to end
-            from = conn.range_begin;
-            to = metadata.len() as i64 - 1;
-        } else if conn.range_begin_given == 0 && conn.range_end_given > 0 {
-            // -200 :: yields last 200
-            to = metadata.len() as i64 - 1;
-            from = to - conn.range_end + 1;
-
-            // clamp start
-            if from < 0 {
-                from = 0;
-            }
-        } else {
-            abort!("internal error - from/to mismatch");
-        }
-
+    if let Some((to, from)) = get_range(&conn, metadata.len() as i64) {
         if from >= metadata.len() as i64 {
             let errname = CString::new("Requested Range Not Satisfiable").unwrap();
             let reason =
