@@ -4,8 +4,9 @@ use std::ffi::OsStr;
 use std::ffi::{CStr, CString};
 use std::fs::File;
 use std::io::BufRead;
-use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::io::IntoRawFd;
 use std::slice;
 use std::sync::Mutex;
 
@@ -78,6 +79,7 @@ pub extern "C" fn parse_extension_map_file(filename: *const libc::c_char) {
     }
 }
 
+// TODO: No longer called from C
 /// Retrieves a mimetype for a URL.
 #[no_mangle]
 pub extern "C" fn url_content_type(
@@ -136,6 +138,7 @@ pub extern "C" fn set_keep_alive_field(timeout_secs: libc::c_int) {
     field.push_str(&format!("Keep-Alive: timeout={}\r\n", timeout_secs));
 }
 
+// TODO: No longer called from C
 /// Returns Connection or Keep-Alive header, depending on conn_close.
 #[no_mangle]
 pub extern "C" fn keep_alive(conn: *const bindings::connection) -> *mut libc::c_char {
@@ -152,17 +155,6 @@ pub extern "C" fn keep_alive(conn: *const bindings::connection) -> *mut libc::c_
         .unwrap()
         .into_raw()
     }
-}
-
-/// Format [when] as an RFC1123 date, stored in the specified buffer. The same buffer is returned
-/// for convenience.
-#[no_mangle]
-pub extern "C" fn rfc1123_date(dest: *mut libc::c_char, when: libc::time_t) -> *mut libc::c_char {
-    let mut dest_slice = unsafe {
-        slice::from_raw_parts_mut(dest as *mut u8, bindings::DATE_LEN.try_into().unwrap())
-    };
-    write!(dest_slice, "{}\x00", HttpDate(when)).unwrap();
-    dest
 }
 
 /// RFC1123 formatted date.
@@ -218,13 +210,13 @@ pub unsafe extern "C" fn split_string(
     dest.as_mut_ptr()
 }
 
+// TODO: No longer called from C, except for tests
 /// Resolve //, /./, and /../ in a URL, in-place.
 ///
 /// Returns NULL if the URL is invalid/unsafe, or the original buffer if successful.
 #[no_mangle]
 pub extern "C" fn make_safe_url(url: *mut libc::c_char) -> *mut libc::c_char {
     assert!(!url.is_null());
-
     let url = unsafe { slice::from_raw_parts_mut(url, libc::strlen(url) + 1) };
 
     // URLs not starting with a slash are illegal.
@@ -280,6 +272,27 @@ pub extern "C" fn make_safe_url(url: *mut libc::c_char) -> *mut libc::c_char {
     url.as_mut_ptr()
 }
 
+fn make_safe_url_2(url: &str) -> Option<String> {
+    // TODO: Rewrite this instead of wrapping make_safe_url.
+    let mut url = CString::new(url).unwrap().into_bytes_with_nul();
+    let result = make_safe_url(url.as_mut_ptr() as *mut libc::c_char);
+    if result.is_null() {
+        None
+    } else {
+        // TODO: truncate after null byte
+        let mut len = 0;
+        for i in 0..url.len() {
+            len = i;
+            if url[i] == 0 {
+                break;
+            }
+        }
+        assert!(len > 0);
+        url.truncate(len);
+        Some(String::from_utf8(url).unwrap())
+    }
+}
+
 /// Encode string to be an RFC3986-compliant URL part.
 struct UrlEncoded<'a>(&'a str);
 
@@ -300,6 +313,7 @@ impl<'a> std::fmt::Display for UrlEncoded<'a> {
     }
 }
 
+// TODO: No longer called from C
 /// Decode URL by converting %XX (where XX are hexadecimal digits) to the character it represents.
 /// Don't forget to free the return value.
 #[no_mangle]
@@ -324,6 +338,17 @@ pub extern "C" fn urldecode(url: *const libc::c_char) -> *mut libc::c_char {
         }
     }
     unsafe { CString::from_vec_unchecked(decoded).into_raw() }
+}
+
+struct UrlDecoded<'a>(&'a str);
+
+impl<'a> std::fmt::Display for UrlDecoded<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // TODO: Rewrite this instead of calling urldecode.
+        let s = CString::new(self.0).unwrap();
+        let decoded = unsafe { CString::from_raw(urldecode(s.as_c_str().as_ptr())) };
+        write!(f, "{}", decoded.to_str().unwrap())
+    }
 }
 
 /// Convert hex digit to integer.
@@ -403,6 +428,17 @@ pub extern "C" fn parse_field(
 
     let value = &request.to_bytes()[value_start_pos..value_end_pos];
     unsafe { CString::from_vec_unchecked(value.to_vec()).into_raw() }
+}
+
+fn parse_field_2(conn: &bindings::connection, field: &str) -> Option<String> {
+    // TODO: Rewrite this instead of calling parse_field.
+    let field = CString::new(field).unwrap();
+    let result = parse_field(conn, field.as_c_str().as_ptr());
+    if result.is_null() {
+        None
+    } else {
+        Some(unsafe { CString::from_raw(result) }.into_string().unwrap())
+    }
 }
 
 /// Return index of first occurrence of `needle` in `haystack`.
@@ -536,6 +572,7 @@ pub extern "C" fn default_reply_impl(
     conn.reply_start = 0; // Reset in case the request set a range.
 }
 
+// TODO: No longer called from C
 /// A redirect reply.
 #[no_mangle]
 pub extern "C" fn redirect_impl(
@@ -629,6 +666,7 @@ impl std::fmt::Display for Listing {
     }
 }
 
+// TODO: No longer called from C
 /// A directory listing reply.
 #[no_mangle]
 pub extern "C" fn generate_dir_listing(
@@ -702,6 +740,316 @@ pub extern "C" fn generate_dir_listing(
     conn.http_code = 200;
 }
 
+/// Return true if file exists.
+fn file_exists(path: &str) -> bool {
+    match std::fs::metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        _ => true,
+    }
+}
+
+/// A not modified reply.
+fn not_modified(server: &bindings::server, conn: &mut bindings::connection) {
+    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
+    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
+
+    let headers = format!(
+        "HTTP/1.1 304 Not Modified\r\n\
+        Date: {}\r\n\
+        {}\
+        Accept-Ranges: bytes\r\n\
+        {}\
+        \r\n",
+        HttpDate(server.now),
+        server_hdr,
+        keep_alive_field.to_str().unwrap(),
+    );
+    let headers = CString::new(headers).unwrap();
+    conn.header_length = headers.as_bytes().len() as bindings::size_t;
+    conn.header = headers.into_raw(); // TODO: freed by C
+    conn.http_code = 304;
+    conn.header_only = 1;
+    conn.reply_length = 0;
+}
+
+/// Get URL to forward to based on host header, if any.
+fn get_forward_to_url(
+    server: &bindings::server,
+    conn: &mut bindings::connection,
+) -> Option<&'static str> {
+    let mut forward_to_url = None;
+    if !server.forward_map.is_null() {
+        if let Some(host) = parse_field_2(conn, "Host: ") {
+            let forward_mappings = unsafe {
+                slice::from_raw_parts(server.forward_map, server.forward_map_size as usize)
+            };
+            for forward_mapping in forward_mappings {
+                let mapping_host = unsafe { CStr::from_ptr(forward_mapping.host) }
+                    .to_str()
+                    .unwrap();
+                let mapping_target = unsafe { CStr::from_ptr(forward_mapping.target_url) }
+                    .to_str()
+                    .unwrap();
+                if host == mapping_host {
+                    forward_to_url = Some(mapping_target);
+                    break;
+                }
+            }
+        }
+    }
+    if forward_to_url.is_none() && !server.forward_all_url.is_null() {
+        forward_to_url = Some(
+            unsafe { CStr::from_ptr(server.forward_all_url) }
+                .to_str()
+                .unwrap(),
+        );
+    }
+    forward_to_url
+}
+
+/// Process a GET/HEAD request.
+#[no_mangle]
+pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindings::connection) {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+    let wwwroot = unsafe { CStr::from_ptr(server.wwwroot) }.to_str().unwrap();
+    let index_name = unsafe { CStr::from_ptr(server.index_name) }
+        .to_str()
+        .unwrap();
+    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
+    let keep_alive_field = unsafe { CString::from_raw(keep_alive(conn)) };
+    let url = unsafe { CStr::from_ptr(conn.url) }.to_str().unwrap();
+
+    // strip query params
+    let stripped_url = url.splitn(2, '?').next().unwrap().to_string();
+
+    // work out path of file being requested
+    let decoded_url = UrlDecoded(&stripped_url).to_string();
+
+    // Make sure URL is safe
+    let decoded_url = match make_safe_url_2(&decoded_url) {
+        Some(decoded_url) => decoded_url,
+        None => {
+            let errname = CString::new("Bad Request").unwrap();
+            let reason = CString::new(format!("You requested an invalid URL.")).unwrap();
+            default_reply_impl(server, conn, 400, errname.as_ptr(), reason.as_ptr());
+            return;
+        }
+    };
+
+    // test the host against web forward options
+    if let Some(forward_to_url) = get_forward_to_url(server, conn) {
+        let redirect_url = CString::new(format!("{}{}", forward_to_url, decoded_url)).unwrap();
+        redirect_impl(server, conn, redirect_url.as_ptr());
+        return;
+    }
+
+    let target; // path to the file we're going to return
+    let mimetype; // the mimetype for that file
+
+    // does it end in a slash? serve up url/index_name
+    if decoded_url.ends_with('/') {
+        // does an index exist?
+        target = format!("{}{}{}", wwwroot, decoded_url, index_name);
+        if !file_exists(&target) {
+            if server.no_listing > 0 {
+                // Return 404 instead of 403 to make --no-listing indistinguishable from the
+                // directory not existing. i.e.: Don't leak information.
+                let errname = CString::new("Not Found").unwrap();
+                let reason = CString::new("The URL you requested was not found.").unwrap();
+                default_reply_impl(server, conn, 404, errname.as_ptr(), reason.as_ptr());
+                // TODO: free decoded_url?
+                return;
+            }
+            // return directory listing
+            let target = CString::new(format!("{}{}", wwwroot, decoded_url)).unwrap();
+            let decoded_url = CString::new(decoded_url).unwrap();
+            generate_dir_listing(server, conn, target.as_ptr(), decoded_url.as_ptr());
+            return;
+        } else {
+            mimetype = url_content_type(server, server.index_name);
+        }
+    } else {
+        target = format!("{}{}", wwwroot, decoded_url);
+        let decoded_url = CString::new(decoded_url).unwrap();
+        mimetype = url_content_type(server, decoded_url.as_ptr());
+    }
+
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(target)
+    {
+        Ok(file) => file,
+        Err(e) => {
+            let (errcode, errname, reason) = match e.kind() {
+                std::io::ErrorKind::PermissionDenied => (
+                    403,
+                    "Forbidden",
+                    "You don't have permission to access this URL.".to_string(),
+                ),
+                std::io::ErrorKind::NotFound => (
+                    404,
+                    "Not Found",
+                    "The URL you requested was not found.".to_string(),
+                ),
+                _ => (
+                    500,
+                    "Internal Server Error",
+                    format!("The URL you requested cannot be returned: {}.", e),
+                ),
+            };
+            let errname = CString::new(errname).unwrap();
+            let reason = CString::new(reason).unwrap();
+            default_reply_impl(server, conn, errcode, errname.as_ptr(), reason.as_ptr());
+            return;
+        }
+    };
+
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            let errname = CString::new("Internal Server Error").unwrap();
+            let reason = CString::new(format!("fstat() failed: {}.", e)).unwrap();
+            default_reply_impl(server, conn, 500, errname.as_ptr(), reason.as_ptr());
+            return;
+        }
+    };
+
+    if metadata.is_dir() {
+        let url = CString::new(format!(
+            "{}/",
+            unsafe { CStr::from_ptr(conn.url) }.to_str().unwrap()
+        ))
+        .unwrap();
+        redirect_impl(server, conn, url.as_ptr());
+        return;
+    } else if !metadata.is_file() {
+        // TODO: Add test coverage
+        let errname = CString::new("Forbidden").unwrap();
+        let reason = CString::new("Not a regular file.").unwrap();
+        default_reply_impl(server, conn, 403, errname.as_ptr(), reason.as_ptr());
+        return;
+    }
+
+    conn.reply_fd = file.into_raw_fd();
+    conn.reply_type = bindings::connection_REPLY_FROMFILE;
+    let lastmod = metadata
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // handle If-Modified-Since
+    if let Some(if_mod_since) = parse_field_2(conn, "If-Modified-Since: ") {
+        if HttpDate(lastmod.try_into().unwrap()).to_string() == if_mod_since {
+            not_modified(server, conn);
+            return;
+        }
+    }
+
+    // handle Range
+    // TODO: Extract this into a function
+    if conn.range_begin_given > 0 || conn.range_end_given > 0 {
+        let mut to;
+        let mut from;
+        if conn.range_begin_given > 0 && conn.range_end_given > 0 {
+            // 100-200
+            from = conn.range_begin;
+            to = conn.range_end;
+
+            // clamp end to filestat.st_size-1
+            if to > (metadata.len() as i64 - 1) {
+                to = metadata.len() as i64 - 1;
+            }
+        } else if conn.range_begin_given > 0 && conn.range_end_given == 0 {
+            // 100- :: yields 100 to end
+            from = conn.range_begin;
+            to = metadata.len() as i64 - 1;
+        } else if conn.range_begin_given == 0 && conn.range_end_given > 0 {
+            // -200 :: yields last 200
+            to = metadata.len() as i64 - 1;
+            from = to - conn.range_end + 1;
+
+            // clamp start
+            if from < 0 {
+                from = 0;
+            }
+        } else {
+            abort!("internal error - from/to mismatch");
+        }
+
+        if from >= metadata.len() as i64 {
+            let errname = CString::new("Requested Range Not Satisfiable").unwrap();
+            let reason =
+                CString::new(format!("You requested a range outside of the file.")).unwrap();
+            default_reply_impl(server, conn, 416, errname.as_ptr(), reason.as_ptr());
+            return;
+        }
+
+        if to < from {
+            let errname = CString::new("Requested Range Not Satisfiable").unwrap();
+            let reason = CString::new(format!("You requested a backward range.")).unwrap();
+            default_reply_impl(server, conn, 416, errname.as_ptr(), reason.as_ptr());
+            return;
+        }
+
+        conn.reply_start = from;
+        conn.reply_length = to - from + 1;
+        let headers = format!(
+            "HTTP/1.1 206 Partial Content\r\n\
+            Date: {}\r\n\
+            {}\
+            Accept-Ranges: bytes\r\n\
+            {}\
+            Content-Length: {}\r\n\
+            Content-Range: bytes {}-{}/{}\r\n\
+            Content-Type: {}\r\n\
+            Last-Modified: {}\r\n\
+            \r\n",
+            HttpDate(server.now),
+            server_hdr,
+            keep_alive_field.to_str().unwrap(),
+            conn.reply_length,
+            from,
+            to,
+            metadata.len(),
+            unsafe { CStr::from_ptr(mimetype) }.to_str().unwrap(),
+            HttpDate(lastmod.try_into().unwrap())
+        );
+        let headers = CString::new(headers).unwrap();
+        conn.header_length = headers.as_bytes().len() as bindings::size_t;
+        conn.header = headers.into_raw(); // TODO: freed by C
+        conn.http_code = 206;
+        return;
+    }
+
+    conn.reply_length = metadata.len().try_into().unwrap();
+
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\n\
+        Date: {}\r\n\
+        {}\
+        Accept-Ranges: bytes\r\n\
+        {}\
+        Content-Length: {}\r\n\
+        Content-Type: {}\r\n\
+        Last-Modified: {}\r\n\
+        \r\n",
+        HttpDate(server.now),
+        server_hdr,
+        keep_alive_field.to_str().unwrap(),
+        conn.reply_length,
+        unsafe { CStr::from_ptr(mimetype) }.to_str().unwrap(),
+        HttpDate(lastmod.try_into().unwrap())
+    );
+    let headers = CString::new(headers).unwrap();
+    conn.header_length = headers.as_bytes().len() as bindings::size_t;
+    conn.header = headers.into_raw(); // TODO: freed by C
+    conn.http_code = 200;
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -715,10 +1063,26 @@ mod test {
     }
 
     #[test]
+    fn url_decoded_works() {
+        assert_eq!(
+            UrlDecoded("escape%28this%29name%09").to_string(),
+            "escape(this)name\t"
+        );
+        assert_eq!(UrlDecoded("%F0%9F%A6%80").to_string(), "\u{1F980}");
+    }
+
+    #[test]
     fn html_escaped_works() {
         assert_eq!(
             HtmlEscaped("foo<>&'\"").to_string(),
             "foo&lt;&gt;&amp;&apos;&quot;"
         );
+    }
+
+    #[test]
+    fn make_safe_url_works() {
+        assert_eq!(make_safe_url_2("/foo/../.."), None);
+        assert_eq!(make_safe_url_2("/foo/.."), Some("/".to_string()));
+        assert_eq!(make_safe_url_2("/"), Some("/".to_string()));
     }
 }

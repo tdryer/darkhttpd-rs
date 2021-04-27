@@ -457,8 +457,6 @@ extern void parse_default_extension_map(void);
  */
 extern void parse_extension_map_file(const char *filename);
 
-extern const char *url_content_type(const struct server *srv, const char *url);
-
 static const char *get_address_text(const void *addr) {
 #ifdef HAVE_INET6
     if (srv.inet6) {
@@ -1136,20 +1134,6 @@ static void poll_check_timeout(struct connection *conn) {
     }
 }
 
-/* Format [when] as an RFC1123 date, stored in the specified buffer.  The same
- * buffer is returned for convenience.
- */
-#define DATE_LEN 30 /* strlen("Fri, 28 Feb 2003 00:02:08 GMT")+1 */
-extern char *rfc1123_date(char *dest, const time_t when);
-
-/* Decode URL by converting %XX (where XX are hexadecimal digits) to the
- * character it represents.  Don't forget to free the return value.
- */
-extern char *urldecode(const char *url);
-
-/* Returns Connection or Keep-Alive header, depending on conn_close. */
-extern char *keep_alive(const struct connection *conn);
-
 extern void default_reply_impl(const struct server *srv,
         struct connection *conn, const int errcode, const char *errname,
         const char *reason);
@@ -1171,25 +1155,6 @@ static void default_reply(struct connection *conn,
     default_reply_impl(&srv, conn, errcode, errname, reason);
 
     free(reason);
-}
-
-extern void redirect_impl(const struct server *srv,
-        struct connection *conn, const char *location);
-
-static void redirect(struct connection *conn, const char *format, ...)
-    __printflike(2, 3);
-static void redirect(struct connection *conn, const char *format, ...) {
-    char *where;
-    va_list va;
-
-    va_start(va, format);
-    xvasprintf(&where, format, va);
-    va_end(va);
-
-    /* C wrapper just deals with formatting. */
-    redirect_impl(&srv, conn, where);
-
-    free(where);
 }
 
 /* Parses a single HTTP request field.  Returns string from end of [field] to
@@ -1290,259 +1255,8 @@ static int parse_request(struct connection *conn) {
     return 1;
 }
 
-static int file_exists(const char *path) {
-    struct stat filestat;
-    if ((stat(path, &filestat) == -1) && (errno == ENOENT))
-        return 0;
-    else
-        return 1;
-}
-
-struct dlent {
-    char *name;
-    int is_dir;
-    off_t size;
-};
-
-extern void generate_dir_listing(const struct server *srv,
-        struct connection *conn, const char *path, const char *decoded_url);
-
 /* Process a GET/HEAD request. */
-static void process_get(struct connection *conn) {
-    char *decoded_url, *end, *target, *if_mod_since;
-    char date[DATE_LEN], lastmod[DATE_LEN];
-    const char *mimetype = NULL;
-    const char *forward_to = NULL;
-    struct stat filestat;
-
-    /* strip out query params */
-    if ((end = strchr(conn->url, '?')) != NULL)
-        *end = '\0';
-
-    /* work out path of file being requested */
-    decoded_url = urldecode(conn->url);
-
-    /* make sure it's safe */
-    if (make_safe_url(decoded_url) == NULL) {
-        default_reply(conn, 400, "Bad Request",
-                      "You requested an invalid URL.");
-        free_rust_cstring(decoded_url);
-        return;
-    }
-
-    /* test the host against web forward options */
-    if (srv.forward_map) {
-        char *host = parse_field(conn, "Host: ");
-        if (host) {
-            size_t i;
-            if (debug)
-                printf("host=\"%s\"\n", host);
-            for (i = 0; i < srv.forward_map_size; i++) {
-                if (strcasecmp(srv.forward_map[i].host, host) == 0) {
-                    forward_to = srv.forward_map[i].target_url;
-                    break;
-                }
-            }
-            free_rust_cstring(host);
-        }
-    }
-    if (!forward_to) {
-        forward_to = srv.forward_all_url;
-    }
-    if (forward_to) {
-        redirect(conn, "%s%s", forward_to, decoded_url);
-        free_rust_cstring(decoded_url);
-        return;
-    }
-
-    /* does it end in a slash? serve up url/index_name */
-    if (decoded_url[strlen(decoded_url)-1] == '/') {
-        xasprintf(&target, "%s%s%s", srv.wwwroot, decoded_url, srv.index_name);
-        if (!file_exists(target)) {
-            free(target);
-            if (srv.no_listing) {
-                free_rust_cstring(decoded_url);
-                /* Return 404 instead of 403 to make --no-listing
-                 * indistinguishable from the directory not existing.
-                 * i.e.: Don't leak information.
-                 */
-                default_reply(conn, 404, "Not Found",
-                    "The URL you requested was not found.");
-                return;
-            }
-            xasprintf(&target, "%s%s", srv.wwwroot, decoded_url);
-            generate_dir_listing(&srv, conn, target, decoded_url);
-            free(target);
-            free_rust_cstring(decoded_url);
-            return;
-        }
-        mimetype = url_content_type(&srv, srv.index_name);
-    }
-    else {
-        /* points to a file */
-        xasprintf(&target, "%s%s", srv.wwwroot, decoded_url);
-        mimetype = url_content_type(&srv, decoded_url);
-    }
-    free_rust_cstring(decoded_url);
-    if (debug)
-        printf("url=\"%s\", target=\"%s\", content-type=\"%s\"\n",
-               conn->url, target, mimetype);
-
-    /* open file */
-    conn->reply_fd = open(target, O_RDONLY | O_NONBLOCK);
-    free(target);
-
-    if (conn->reply_fd == -1) {
-        /* open() failed */
-        if (errno == EACCES)
-            default_reply(conn, 403, "Forbidden",
-                "You don't have permission to access this URL.");
-        else if (errno == ENOENT)
-            default_reply(conn, 404, "Not Found",
-                "The URL you requested was not found.");
-        else
-            default_reply(conn, 500, "Internal Server Error",
-                "The URL you requested cannot be returned: %s.",
-                strerror(errno));
-
-        return;
-    }
-
-    /* stat the file */
-    if (fstat(conn->reply_fd, &filestat) == -1) {
-        default_reply(conn, 500, "Internal Server Error",
-            "fstat() failed: %s.", strerror(errno));
-        return;
-    }
-
-    /* make sure it's a regular file */
-    if (S_ISDIR(filestat.st_mode)) {
-        redirect(conn, "%s/", conn->url);
-        return;
-    }
-    else if (!S_ISREG(filestat.st_mode)) {
-        default_reply(conn, 403, "Forbidden", "Not a regular file.");
-        return;
-    }
-
-    conn->reply_type = REPLY_FROMFILE;
-    rfc1123_date(lastmod, filestat.st_mtime);
-
-    /* check for If-Modified-Since, may not have to send */
-    if_mod_since = parse_field(conn, "If-Modified-Since: ");
-    if ((if_mod_since != NULL) &&
-            (strcmp(if_mod_since, lastmod) == 0)) {
-        if (debug)
-            printf("not modified since %s\n", if_mod_since);
-        conn->http_code = 304;
-        char *keep_alive_field = keep_alive(conn);
-        conn->header_length = xasprintf(&(conn->header),
-         "HTTP/1.1 304 Not Modified\r\n"
-         "Date: %s\r\n"
-         "%s" /* server */
-         "Accept-Ranges: bytes\r\n"
-         "%s" /* keep-alive */
-         "\r\n",
-         rfc1123_date(date, srv.now), srv.server_hdr, keep_alive_field);
-        free_rust_cstring(keep_alive_field);
-        conn->reply_length = 0;
-        conn->reply_type = REPLY_GENERATED;
-        conn->header_only = 1;
-
-        free_rust_cstring(if_mod_since);
-        return;
-    }
-    free_rust_cstring(if_mod_since);
-
-    if (conn->range_begin_given || conn->range_end_given) {
-        off_t from, to;
-
-        if (conn->range_begin_given && conn->range_end_given) {
-            /* 100-200 */
-            from = conn->range_begin;
-            to = conn->range_end;
-
-            /* clamp end to filestat.st_size-1 */
-            if (to > (filestat.st_size - 1))
-                to = filestat.st_size - 1;
-        }
-        else if (conn->range_begin_given && !conn->range_end_given) {
-            /* 100- :: yields 100 to end */
-            from = conn->range_begin;
-            to = filestat.st_size - 1;
-        }
-        else if (!conn->range_begin_given && conn->range_end_given) {
-            /* -200 :: yields last 200 */
-            to = filestat.st_size - 1;
-            from = to - conn->range_end + 1;
-
-            /* clamp start */
-            if (from < 0)
-                from = 0;
-        }
-        else
-            errx(1, "internal error - from/to mismatch");
-
-        if (from >= filestat.st_size) {
-            default_reply(conn, 416, "Requested Range Not Satisfiable",
-                "You requested a range outside of the file.");
-            return;
-        }
-
-        if (to < from) {
-            default_reply(conn, 416, "Requested Range Not Satisfiable",
-                "You requested a backward range.");
-            return;
-        }
-
-        conn->reply_start = from;
-        conn->reply_length = to - from + 1;
-
-        char *keep_alive_field = keep_alive(conn);
-        conn->header_length = xasprintf(&(conn->header),
-            "HTTP/1.1 206 Partial Content\r\n"
-            "Date: %s\r\n"
-            "%s" /* server */
-            "Accept-Ranges: bytes\r\n"
-            "%s" /* keep-alive */
-            "Content-Length: %llu\r\n"
-            "Content-Range: bytes %llu-%llu/%llu\r\n"
-            "Content-Type: %s\r\n"
-            "Last-Modified: %s\r\n"
-            "\r\n"
-            ,
-            rfc1123_date(date, srv.now), srv.server_hdr, keep_alive_field,
-            llu(conn->reply_length), llu(from), llu(to),
-            llu(filestat.st_size), mimetype, lastmod
-        );
-        free_rust_cstring(keep_alive_field);
-        conn->http_code = 206;
-        if (debug)
-            printf("sending %llu-%llu/%llu\n",
-                   llu(from), llu(to), llu(filestat.st_size));
-    }
-    else {
-        /* no range stuff */
-        conn->reply_length = filestat.st_size;
-        char *keep_alive_field = keep_alive(conn);
-        conn->header_length = xasprintf(&(conn->header),
-            "HTTP/1.1 200 OK\r\n"
-            "Date: %s\r\n"
-            "%s" /* server */
-            "Accept-Ranges: bytes\r\n"
-            "%s" /* keep-alive */
-            "Content-Length: %llu\r\n"
-            "Content-Type: %s\r\n"
-            "Last-Modified: %s\r\n"
-            "\r\n"
-            ,
-            rfc1123_date(date, srv.now), srv.server_hdr, keep_alive_field,
-            llu(conn->reply_length), mimetype, lastmod
-        );
-        free_rust_cstring(keep_alive_field);
-        conn->http_code = 200;
-    }
-}
+extern void process_get(const struct server *srv, struct connection *conn);
 
 /* Process a request: build the header and reply, advance state. */
 static void process_request(struct connection *conn) {
@@ -1561,10 +1275,10 @@ static void process_request(struct connection *conn) {
             "Access denied due to invalid credentials.");
     }
     else if (strcmp(conn->method, "GET") == 0) {
-        process_get(conn);
+        process_get(&srv, conn);
     }
     else if (strcmp(conn->method, "HEAD") == 0) {
-        process_get(conn);
+        process_get(&srv, conn);
         conn->header_only = 1;
     }
     else {
