@@ -300,6 +300,7 @@ struct server {
     int syslog_enabled;
     volatile int running;       /* signal handler sets this to false */
     const char *default_mimetype;
+    void *keep_alive_field;     /* used by Rust */
 };
 
 static struct server srv = {
@@ -337,6 +338,7 @@ static struct server srv = {
     .syslog_enabled = 0,
     .running = 1,
     .default_mimetype = octet_stream,
+    .keep_alive_field = NULL,
 };
 
 /* To prevent a malformed request from eating up too much memory, die once the
@@ -1782,14 +1784,14 @@ static void stop_running(int sig unused) {
 }
 
 /* Set the keep alive field. */
-extern void set_keep_alive_field(int timeout_secs);
+extern void set_keep_alive_field(struct server *srv);
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
     printf("%s, %s.\n", srv.pkgname, srv.copyright);
     parse_default_extension_map();
     parse_commandline(argc, argv);
-    set_keep_alive_field(srv.timeout_secs);
+    set_keep_alive_field(&srv);
     if (srv.want_server_id)
         xasprintf(&srv.server_hdr, "Server: %s\r\n", srv.pkgname);
     else

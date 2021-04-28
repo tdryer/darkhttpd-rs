@@ -30,7 +30,6 @@ static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
     let mime_map = HashMap::new();
     Mutex::new(mime_map)
 });
-static KEEP_ALIVE_FIELD: Lazy<Mutex<String>> = Lazy::new(|| Mutex::new(String::new()));
 
 // TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
@@ -126,24 +125,22 @@ fn add_mimetype_line(line: &CStr) {
 
 /// Set the keep alive field.
 #[no_mangle]
-pub extern "C" fn set_keep_alive_field(timeout_secs: libc::c_int) {
-    let mut field = KEEP_ALIVE_FIELD
-        .lock()
-        .expect("failed to lock KEEP_ALIVE_FIELD");
-    field.clear();
-    field.push_str(&format!("Keep-Alive: timeout={}\r\n", timeout_secs));
+pub extern "C" fn set_keep_alive_field(server: *mut bindings::server) {
+    let server = unsafe { server.as_mut().unwrap() };
+    assert!(server.keep_alive_field.is_null());
+    let keep_alive = format!("Keep-Alive: timeout={}\r\n", server.timeout_secs);
+    server.keep_alive_field = Box::into_raw(Box::new(keep_alive)) as *mut libc::c_void;
 }
 
 /// Returns Connection or Keep-Alive header, depending on conn_close.
-fn keep_alive(conn: &bindings::connection) -> String {
+fn keep_alive(server: &bindings::server, conn: &bindings::connection) -> String {
     // TODO: We've made the keep alive field caching pretty useless by cloning the string each
     // time. Return a reference once this can be a method?
     if conn.conn_close == 1 {
         "Connection: close\r\n".to_string()
     } else {
-        KEEP_ALIVE_FIELD
-            .lock()
-            .expect("failed to lock KEEP_ALIVE_FIELD")
+        unsafe { (server.keep_alive_field as *const String).as_ref() }
+            .expect("keep_alive_field is null")
             .clone()
     }
 }
@@ -518,7 +515,7 @@ fn default_reply(
         errname,
         HttpDate(server.now),
         server_hdr,
-        keep_alive(conn),
+        keep_alive(server, conn),
         conn.reply_length,
         if !server.auth_key.is_null() {
             "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
@@ -566,7 +563,7 @@ fn redirect(server: &bindings::server, conn: &mut bindings::connection, location
         HttpDate(server.now),
         server_hdr,
         location,
-        keep_alive(conn),
+        keep_alive(server, conn),
         conn.reply_length,
     );
     let headers = CString::new(headers).unwrap();
@@ -669,7 +666,7 @@ fn generate_dir_listing(
         \r\n",
         HttpDate(server.now),
         server_hdr,
-        keep_alive(conn),
+        keep_alive(server, conn),
         conn.reply_length,
     );
     let headers = CString::new(headers).unwrap();
@@ -700,7 +697,7 @@ fn not_modified(server: &bindings::server, conn: &mut bindings::connection) {
         \r\n",
         HttpDate(server.now),
         server_hdr,
-        keep_alive(conn),
+        keep_alive(server, conn),
     );
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
@@ -942,7 +939,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
             \r\n",
             HttpDate(server.now),
             server_hdr,
-            keep_alive(conn),
+            keep_alive(server, conn),
             conn.reply_length,
             from,
             to,
@@ -971,7 +968,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
         \r\n",
         HttpDate(server.now),
         server_hdr,
-        keep_alive(conn),
+        keep_alive(server, conn),
         conn.reply_length,
         mimetype,
         HttpDate(lastmod.try_into().unwrap())
