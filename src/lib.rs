@@ -534,18 +534,8 @@ fn default_reply(
     conn.reply_start = 0; // Reset in case the request set a range.
 }
 
-// TODO: No longer called from C
 /// A redirect reply.
-#[no_mangle]
-pub extern "C" fn redirect_impl(
-    server: *const bindings::server,
-    conn: *mut bindings::connection,
-    location: *const libc::c_char,
-) {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-    assert!(!location.is_null());
-    let location = unsafe { CStr::from_ptr(location).to_str().unwrap() };
+fn redirect(server: &bindings::server, conn: &mut bindings::connection, location: &str) {
     assert!(!server.server_hdr.is_null());
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
 
@@ -582,7 +572,6 @@ pub extern "C" fn redirect_impl(
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = 301;
 }
@@ -831,8 +820,8 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
 
     // test the host against web forward options
     if let Some(forward_to_url) = get_forward_to_url(server, conn) {
-        let redirect_url = CString::new(format!("{}{}", forward_to_url, decoded_url)).unwrap();
-        redirect_impl(server, conn, redirect_url.as_ptr());
+        let redirect_url = format!("{}{}", forward_to_url, decoded_url);
+        redirect(server, conn, &redirect_url);
         return;
     }
 
@@ -905,12 +894,8 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     };
 
     if metadata.is_dir() {
-        let url = CString::new(format!(
-            "{}/",
-            unsafe { CStr::from_ptr(conn.url) }.to_str().unwrap()
-        ))
-        .unwrap();
-        redirect_impl(server, conn, url.as_ptr());
+        let url = format!("{}/", unsafe { CStr::from_ptr(conn.url) }.to_str().unwrap());
+        redirect(server, conn, &url);
         return;
     } else if !metadata.is_file() {
         // TODO: Add test coverage
