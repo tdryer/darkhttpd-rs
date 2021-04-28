@@ -276,41 +276,31 @@ impl<'a> std::fmt::Display for UrlEncoded<'a> {
     }
 }
 
-// TODO: No longer called from C
 /// Decode URL by converting %XX (where XX are hexadecimal digits) to the character it represents.
-/// Don't forget to free the return value.
-#[no_mangle]
-pub extern "C" fn urldecode(url: *const libc::c_char) -> *mut libc::c_char {
-    assert!(!url.is_null());
-    let url = unsafe { slice::from_raw_parts(url as *const libc::c_uchar, libc::strlen(url)) };
-    let mut decoded = Vec::with_capacity(url.len());
-    let mut i = 0;
-    while i < url.len() {
-        let c = url[i];
-        assert!(c != 0);
-        if c == b'%'
-            && i + 2 < url.len()
-            && url[i + 1].is_ascii_hexdigit()
-            && url[i + 2].is_ascii_hexdigit()
-        {
-            decoded.push(hex_to_digit(url[i + 1]) * 16 + hex_to_digit(url[i + 2]));
-            i += 3;
-        } else {
-            decoded.push(c);
-            i += 1;
-        }
-    }
-    unsafe { CString::from_vec_unchecked(decoded).into_raw() }
-}
-
 struct UrlDecoded<'a>(&'a str);
 
 impl<'a> std::fmt::Display for UrlDecoded<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO: Rewrite this instead of calling urldecode.
-        let s = CString::new(self.0).unwrap();
-        let decoded = unsafe { CString::from_raw(urldecode(s.as_c_str().as_ptr())) };
-        write!(f, "{}", decoded.to_str().unwrap())
+        let url = self.0.as_bytes();
+        let mut decoded = Vec::with_capacity(url.len());
+        let mut i = 0;
+        while i < url.len() {
+            let c = url[i];
+            assert!(c != 0);
+            if c == b'%'
+                && i + 2 < url.len()
+                && url[i + 1].is_ascii_hexdigit()
+                && url[i + 2].is_ascii_hexdigit()
+            {
+                decoded.push(hex_to_digit(url[i + 1]) * 16 + hex_to_digit(url[i + 2]));
+                i += 3;
+            } else {
+                decoded.push(c);
+                i += 1;
+            }
+        }
+        // TODO: Handle invalid UTF-8 sequences.
+        write!(f, "{}", String::from_utf8(decoded).unwrap())
     }
 }
 
