@@ -1066,7 +1066,7 @@ static void free_connection(struct connection *conn) {
     if (conn->user_agent != NULL) free_rust_cstring(conn->user_agent);
     if (conn->authorization != NULL) free_rust_cstring(conn->authorization);
     if (conn->header != NULL && !conn->header_dont_free) free(conn->header);
-    if (conn->reply != NULL && !conn->reply_dont_free) free(conn->reply);
+    if (conn->reply != NULL && !conn->reply_dont_free) free_rust_cstring(conn->reply);
     if (conn->reply_fd != -1) xclose(conn->reply_fd);
     /* If we ran out of sockets, try to resume accepting. */
     srv.accepting = 1;

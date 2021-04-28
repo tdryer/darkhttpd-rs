@@ -502,7 +502,7 @@ fn default_reply(
     );
     let reply = CString::new(reply).unwrap();
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = reply.into_raw(); // TODO: freed by C
+    conn.reply = reply.into_raw();
 
     let headers = format!(
         "HTTP/1.1 {} {}\r\n\
@@ -562,7 +562,7 @@ pub extern "C" fn redirect_impl(
     );
     let reply = CString::new(reply).unwrap();
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = reply.into_raw(); // TODO: freed by C
+    conn.reply = reply.into_raw();
 
     let headers = format!(
         "HTTP/1.1 301 Moved Permanently\r\n\
@@ -675,7 +675,7 @@ pub extern "C" fn generate_dir_listing(
     );
     let reply = CString::new(reply).unwrap();
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = reply.into_raw(); // TODO: freed by C
+    conn.reply = reply.into_raw();
 
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
