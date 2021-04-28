@@ -201,49 +201,44 @@ pub unsafe extern "C" fn split_string(
     dest.as_mut_ptr()
 }
 
-// TODO: No longer called from C, except for tests
-/// Resolve //, /./, and /../ in a URL, in-place.
+/// Resolve //, /./, and /../ in a URL.
 ///
-/// Returns NULL if the URL is invalid/unsafe, or the original buffer if successful.
-#[no_mangle]
-pub extern "C" fn make_safe_url(url: *mut libc::c_char) -> *mut libc::c_char {
-    assert!(!url.is_null());
-    let url = unsafe { slice::from_raw_parts_mut(url, libc::strlen(url) + 1) };
+/// Returns None if the URL is invalid/unsafe.
+fn make_safe_url(url: &str) -> Option<String> {
+    // TODO: Make this work in-place again?
+    let mut url = url.as_bytes().to_vec();
 
     // URLs not starting with a slash are illegal.
-    if !url.starts_with(&[b'/' as libc::c_char]) {
-        return std::ptr::null_mut();
+    if !url.starts_with(&[b'/']) {
+        return None;
     }
-
-    const SLASH: libc::c_char = b'/' as libc::c_char;
-    const DOT: libc::c_char = b'.' as libc::c_char;
 
     let mut src_index = 0;
     let mut dst_index = 0;
     while src_index < url.len() {
-        if url[src_index] == SLASH && url[src_index + 1] == SLASH {
+        if url[src_index] == b'/' && url.get(src_index + 1) == Some(&b'/') {
             // skip slash
             src_index += 1;
-        } else if url[src_index] == SLASH
-            && url[src_index + 1] == DOT
-            && (url[src_index + 2] == SLASH || url[src_index + 2] == 0)
+        } else if url[src_index] == b'/'
+            && url.get(src_index + 1) == Some(&b'.')
+            && matches!(url.get(src_index + 2), Some(&b'/') | None)
         {
             // skip slash dot slash
             src_index += 2;
-        } else if url[src_index] == SLASH
-            && url[src_index + 1] == DOT
-            && url[src_index + 2] == DOT
-            && (url[src_index + 3] == SLASH || url[src_index + 3] == 0)
+        } else if url[src_index] == b'/'
+            && url.get(src_index + 1) == Some(&b'.')
+            && url.get(src_index + 2) == Some(&b'.')
+            && matches!(url.get(src_index + 3), Some(&b'/') | None)
         {
             // skip slash dot dot slash
             src_index += 3;
             // overwrite previous component
             loop {
                 if dst_index == 0 {
-                    return std::ptr::null_mut();
+                    return None;
                 }
                 dst_index -= 1;
-                if url[dst_index] == SLASH {
+                if url[dst_index] == b'/' {
                     break;
                 }
             }
@@ -254,34 +249,11 @@ pub extern "C" fn make_safe_url(url: *mut libc::c_char) -> *mut libc::c_char {
         }
     }
 
-    // fix up null result
-    if dst_index == 1 {
-        url[0] = SLASH;
-        url[1] = 0;
-    }
+    // Always preserve leading slash
+    dst_index = std::cmp::max(dst_index, 1);
+    url.truncate(dst_index);
 
-    url.as_mut_ptr()
-}
-
-fn make_safe_url_2(url: &str) -> Option<String> {
-    // TODO: Rewrite this instead of wrapping make_safe_url.
-    let mut url = CString::new(url).unwrap().into_bytes_with_nul();
-    let result = make_safe_url(url.as_mut_ptr() as *mut libc::c_char);
-    if result.is_null() {
-        None
-    } else {
-        // TODO: truncate after null byte
-        let mut len = 0;
-        for i in 0..url.len() {
-            len = i;
-            if url[i] == 0 {
-                break;
-            }
-        }
-        assert!(len > 0);
-        url.truncate(len);
-        Some(String::from_utf8(url).unwrap())
-    }
+    Some(String::from_utf8(url).unwrap())
 }
 
 /// Encode string to be an RFC3986-compliant URL part.
@@ -858,7 +830,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     let decoded_url = UrlDecoded(&stripped_url).to_string();
 
     // Make sure URL is safe
-    let decoded_url = match make_safe_url_2(&decoded_url) {
+    let decoded_url = match make_safe_url(&decoded_url) {
         Some(decoded_url) => decoded_url,
         None => {
             let reason = format!("You requested an invalid URL.");
@@ -1102,7 +1074,7 @@ mod test {
             ("//a///b////c/////", Some("/a/b/c/")),
         ];
         for (url, expected) in test_cases {
-            assert_eq!(make_safe_url_2(url), expected.map(|s| s.to_string()));
+            assert_eq!(make_safe_url(url), expected.map(|s| s.to_string()));
         }
     }
 }
