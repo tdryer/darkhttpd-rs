@@ -528,7 +528,7 @@ fn default_reply(
     );
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw(); // TODO: freed by C
+    conn.header = headers.into_raw();
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = errcode;
     conn.reply_start = 0; // Reset in case the request set a range.
@@ -581,7 +581,7 @@ pub extern "C" fn redirect_impl(
     );
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw(); // TODO: freed by C
+    conn.header = headers.into_raw();
 
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = 301;
@@ -693,7 +693,7 @@ pub extern "C" fn generate_dir_listing(
     );
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw(); // TODO: freed by C
+    conn.header = headers.into_raw();
 
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = 200;
@@ -724,7 +724,7 @@ fn not_modified(server: &bindings::server, conn: &mut bindings::connection) {
     );
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw(); // TODO: freed by C
+    conn.header = headers.into_raw();
     conn.http_code = 304;
     conn.header_only = 1;
     conn.reply_length = 0;
@@ -977,7 +977,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
         );
         let headers = CString::new(headers).unwrap();
         conn.header_length = headers.as_bytes().len() as bindings::size_t;
-        conn.header = headers.into_raw(); // TODO: freed by C
+        conn.header = headers.into_raw();
         conn.http_code = 206;
         return;
     }
@@ -1003,7 +1003,7 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     );
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw(); // TODO: freed by C
+    conn.header = headers.into_raw();
     conn.http_code = 200;
 }
 
