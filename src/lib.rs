@@ -616,21 +616,13 @@ impl std::fmt::Display for Listing {
     }
 }
 
-// TODO: No longer called from C
 /// A directory listing reply.
-#[no_mangle]
-pub extern "C" fn generate_dir_listing(
-    server: *const bindings::server,
-    conn: *mut bindings::connection,
-    path: *const libc::c_char,
-    decoded_url: *const libc::c_char,
+fn generate_dir_listing(
+    server: &bindings::server,
+    conn: &mut bindings::connection,
+    path: &str,
+    decoded_url: &str,
 ) {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-    assert!(!path.is_null());
-    let path = unsafe { CStr::from_ptr(path).to_str().unwrap() };
-    assert!(!decoded_url.is_null());
-    let decoded_url = unsafe { CStr::from_ptr(decoded_url).to_str().unwrap() };
     assert!(!server.server_hdr.is_null());
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
 
@@ -683,7 +675,6 @@ pub extern "C" fn generate_dir_listing(
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-
     conn.reply_type = bindings::connection_REPLY_GENERATED;
     conn.http_code = 200;
 }
@@ -842,9 +833,8 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
                 return;
             }
             // return directory listing
-            let target = CString::new(format!("{}{}", wwwroot, decoded_url)).unwrap();
-            let decoded_url = CString::new(decoded_url).unwrap();
-            generate_dir_listing(server, conn, target.as_ptr(), decoded_url.as_ptr());
+            let target = format!("{}{}", wwwroot, decoded_url);
+            generate_dir_listing(server, conn, &target, &decoded_url);
             return;
         } else {
             let index_name = unsafe { CStr::from_ptr(server.index_name).to_str().unwrap() };
