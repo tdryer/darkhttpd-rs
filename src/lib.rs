@@ -95,14 +95,10 @@ impl MimeMap {
 
     /// Get content type for a URL.
     fn url_content_type(&self, url: &str) -> &str {
-        let extension = match url.rsplit('.').next() {
-            Some(extension) => extension,
-            None => return &self.default_mimetype,
-        };
-        match self.mimetypes.get(extension) {
-            Some(mimetype) => mimetype,
-            None => &self.default_mimetype,
-        }
+        url.rsplit('.')
+            .next()
+            .and_then(|extension| self.mimetypes.get(extension))
+            .unwrap_or(&self.default_mimetype)
     }
 }
 
