@@ -93,16 +93,15 @@ impl MimeMap {
         }
     }
 
-    // TODO: return &str
     /// Get content type for a URL.
-    fn url_content_type(&self, url: &str) -> String {
+    fn url_content_type(&self, url: &str) -> &str {
         let extension = match url.rsplit('.').next() {
             Some(extension) => extension,
-            None => return self.default_mimetype.clone(),
+            None => return &self.default_mimetype,
         };
         match self.mimetypes.get(extension) {
-            Some(mimetype) => mimetype.clone(),
-            None => self.default_mimetype.clone(),
+            Some(mimetype) => mimetype,
+            None => &self.default_mimetype,
         }
     }
 }
