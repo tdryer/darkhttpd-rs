@@ -22,8 +22,7 @@ macro_rules! abort {
     })
 }
 
-// TODO: Use String instead of CString
-type MimeMap = HashMap<CString, CString>;
+type MimeMap = HashMap<String, String>;
 
 // TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
@@ -58,8 +57,7 @@ pub extern "C" fn parse_default_extension_map(server: *mut bindings::server) {
     let mut mime_map = MimeMap::new();
 
     for line in DEFAULT_EXTENSIONS_MAP {
-        let line = unsafe { CString::from_vec_unchecked(line.as_bytes().to_vec()) };
-        add_mimetype_line(&mut mime_map, &line);
+        add_mimetype_line(&mut mime_map, line);
     }
 
     server.mime_map = Box::into_raw(Box::new(mime_map)) as *mut libc::c_void;
@@ -81,7 +79,6 @@ pub extern "C" fn parse_extension_map_file(
     for line in std::io::BufReader::new(file).lines() {
         let line =
             line.unwrap_or_else(|e| abort!("failed to read {}: {}", filename.to_string_lossy(), e));
-        let line = unsafe { CString::from_vec_unchecked(line.into_bytes()) };
         add_mimetype_line(mime_map, &line);
     }
 }
@@ -96,30 +93,32 @@ fn url_content_type(server: &bindings::server, url: &str) -> String {
         Some(extension) => extension,
         None => return default_mimetype.to_string(),
     };
-    match mime_map.get(&CString::new(extension).unwrap()) {
-        Some(mimetype) => mimetype.as_c_str().to_str().unwrap().to_string(),
+    match mime_map.get(extension) {
+        Some(mimetype) => mimetype.clone(),
         None => default_mimetype.to_string(),
     }
 }
 
 /// Parses a mimetype line and adds the parsed data to MIME_MAP.
-fn add_mimetype_line(mime_map: &mut MimeMap, line: &CStr) {
+fn add_mimetype_line(mime_map: &mut MimeMap, line: &str) {
     let mut fields = line
-        .to_bytes()
+        .as_bytes()
         .split(|&b| b == b' ' || b == b'\t')
-        .filter(|slice| slice.len() > 0)
-        .map(|field| unsafe { CString::from_vec_unchecked(field.to_vec()) });
+        .filter(|slice| slice.len() > 0);
     let mimetype = match fields.next() {
-        Some(mimetype) => mimetype,
+        Some(mimetype) => String::from_utf8(mimetype.to_vec()).unwrap(),
         None => return, // empty line
     };
     if mimetype.as_bytes()[0] == b'#' {
         return; // comment
     }
     for extension in fields {
-        assert!(mimetype.as_bytes().len() > 1);
-        assert!(extension.as_bytes().len() > 1);
-        mime_map.insert(extension, mimetype.clone());
+        assert!(mimetype.len() > 1);
+        assert!(extension.len() > 1);
+        mime_map.insert(
+            String::from_utf8(extension.to_vec()).unwrap(),
+            mimetype.clone(),
+        );
     }
 }
 
