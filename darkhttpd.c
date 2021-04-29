@@ -301,6 +301,7 @@ struct server {
     volatile int running;       /* signal handler sets this to false */
     const char *default_mimetype;
     void *keep_alive_field;     /* used by Rust */
+    void *mime_map;             /* used by Rust */
 };
 
 static struct server srv = {
@@ -339,6 +340,7 @@ static struct server srv = {
     .running = 1,
     .default_mimetype = octet_stream,
     .keep_alive_field = NULL,
+    .mime_map = NULL,
 };
 
 /* To prevent a malformed request from eating up too much memory, die once the
@@ -452,12 +454,12 @@ static void add_forward_mapping(const char * const host,
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.
  */
-extern void parse_default_extension_map(void);
+extern void parse_default_extension_map(struct server *srv);
 
 /* ---------------------------------------------------------------------------
  * Adds contents of specified file to mime_map list.
  */
-extern void parse_extension_map_file(const char *filename);
+extern void parse_extension_map_file(struct server *srv, const char *filename);
 
 static const char *get_address_text(const void *addr) {
 #ifdef HAVE_INET6
@@ -771,7 +773,7 @@ static void parse_commandline(const int argc, char *argv[]) {
         else if (strcmp(argv[i], "--mimetypes") == 0) {
             if (++i >= argc)
                 errx(1, "missing filename after --mimetypes");
-            parse_extension_map_file(argv[i]);
+            parse_extension_map_file(&srv, argv[i]);
         }
         else if (strcmp(argv[i], "--default-mimetype") == 0) {
             if (++i >= argc)
@@ -1789,7 +1791,7 @@ extern void set_keep_alive_field(struct server *srv);
 /* Execution starts here. */
 int main(int argc, char **argv) {
     printf("%s, %s.\n", srv.pkgname, srv.copyright);
-    parse_default_extension_map();
+    parse_default_extension_map(&srv);
     parse_commandline(argc, argv);
     set_keep_alive_field(&srv);
     if (srv.want_server_id)

@@ -8,10 +8,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::IntoRawFd;
 use std::slice;
-use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
-use once_cell::sync::Lazy;
 
 mod bindings;
 
@@ -25,11 +23,7 @@ macro_rules! abort {
 }
 
 // TODO: Use String instead of CString
-// TODO: Remove these statics when we can propagate them instead.
-static MIME_MAP: Lazy<Mutex<HashMap<CString, CString>>> = Lazy::new(|| {
-    let mime_map = HashMap::new();
-    Mutex::new(mime_map)
-});
+type MimeMap = HashMap<CString, CString>;
 
 // TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
@@ -57,25 +51,38 @@ const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
 
 /// Adds contents of DEFAULT_EXTENSIONS_MAP to mime_map.
 #[no_mangle]
-pub extern "C" fn parse_default_extension_map() {
+pub extern "C" fn parse_default_extension_map(server: *mut bindings::server) {
+    let server = unsafe { server.as_mut().unwrap() };
+
+    assert!(server.mime_map.is_null());
+    let mut mime_map = MimeMap::new();
+
     for line in DEFAULT_EXTENSIONS_MAP {
         let line = unsafe { CString::from_vec_unchecked(line.as_bytes().to_vec()) };
-        add_mimetype_line(&line);
+        add_mimetype_line(&mut mime_map, &line);
     }
+
+    server.mime_map = Box::into_raw(Box::new(mime_map)) as *mut libc::c_void;
 }
 
 /// Adds contents of specified file to mime_map list.
 #[no_mangle]
-pub extern "C" fn parse_extension_map_file(filename: *const libc::c_char) {
+pub extern "C" fn parse_extension_map_file(
+    server: *mut bindings::server,
+    filename: *const libc::c_char,
+) {
+    let server = unsafe { server.as_mut().unwrap() };
     assert!(!filename.is_null());
     let filename = unsafe { CStr::from_ptr(filename) };
+    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut().unwrap() };
+
     let file = File::open(OsStr::from_bytes(filename.to_bytes()))
         .unwrap_or_else(|e| abort!("failed to open {}: {}", filename.to_string_lossy(), e));
     for line in std::io::BufReader::new(file).lines() {
         let line =
             line.unwrap_or_else(|e| abort!("failed to read {}: {}", filename.to_string_lossy(), e));
         let line = unsafe { CString::from_vec_unchecked(line.into_bytes()) };
-        add_mimetype_line(&line);
+        add_mimetype_line(mime_map, &line);
     }
 }
 
@@ -84,22 +91,19 @@ fn url_content_type(server: &bindings::server, url: &str) -> String {
     let default_mimetype = unsafe { CStr::from_ptr(server.default_mimetype) }
         .to_str()
         .unwrap();
+    let mime_map = unsafe { (server.mime_map as *const MimeMap).as_ref().unwrap() };
     let extension = match url.rsplit('.').next() {
         Some(extension) => extension,
         None => return default_mimetype.to_string(),
     };
-    match MIME_MAP
-        .lock()
-        .expect("failed to lock MIME_MAP")
-        .get(&CString::new(extension).unwrap())
-    {
+    match mime_map.get(&CString::new(extension).unwrap()) {
         Some(mimetype) => mimetype.as_c_str().to_str().unwrap().to_string(),
         None => default_mimetype.to_string(),
     }
 }
 
 /// Parses a mimetype line and adds the parsed data to MIME_MAP.
-fn add_mimetype_line(line: &CStr) {
+fn add_mimetype_line(mime_map: &mut MimeMap, line: &CStr) {
     let mut fields = line
         .to_bytes()
         .split(|&b| b == b' ' || b == b'\t')
@@ -115,11 +119,7 @@ fn add_mimetype_line(line: &CStr) {
     for extension in fields {
         assert!(mimetype.as_bytes().len() > 1);
         assert!(extension.as_bytes().len() > 1);
-        // TODO: Cases valgrind false-positives as "possibly lost" and "still reachable".
-        MIME_MAP
-            .lock()
-            .expect("failed to lock MIME_MAP")
-            .insert(extension, mimetype.clone());
+        mime_map.insert(extension, mimetype.clone());
     }
 }
 
