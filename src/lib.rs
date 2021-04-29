@@ -102,23 +102,17 @@ fn url_content_type(server: &bindings::server, url: &str) -> String {
 /// Parses a mimetype line and adds the parsed data to MIME_MAP.
 fn add_mimetype_line(mime_map: &mut MimeMap, line: &str) {
     let mut fields = line
-        .as_bytes()
-        .split(|&b| b == b' ' || b == b'\t')
-        .filter(|slice| slice.len() > 0);
+        .split(|c| matches!(c, ' ' | '\t'))
+        .filter(|field| field.len() > 0);
     let mimetype = match fields.next() {
-        Some(mimetype) => String::from_utf8(mimetype.to_vec()).unwrap(),
+        Some(mimetype) => mimetype,
         None => return, // empty line
     };
-    if mimetype.as_bytes()[0] == b'#' {
+    if mimetype.starts_with('#') {
         return; // comment
     }
     for extension in fields {
-        assert!(mimetype.len() > 1);
-        assert!(extension.len() > 1);
-        mime_map.insert(
-            String::from_utf8(extension.to_vec()).unwrap(),
-            mimetype.clone(),
-        );
+        mime_map.insert(extension.to_string(), mimetype.to_string());
     }
 }
 
