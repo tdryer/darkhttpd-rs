@@ -22,8 +22,6 @@ macro_rules! abort {
     })
 }
 
-type MimeMap = HashMap<String, String>;
-
 // TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
     "application/ogg         ogg",
@@ -48,22 +46,72 @@ const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
     "video/mp4               mp4",
 ];
 
-/// Adds contents of DEFAULT_EXTENSIONS_MAP to mime_map.
+// TODO: store the default in here too
+struct MimeMap(HashMap<String, String>);
+
+impl MimeMap {
+    /// Create MimeMap using the default extension map.
+    fn parse_default_extension_map() -> MimeMap {
+        let mut mime_map = MimeMap(HashMap::new());
+        for line in DEFAULT_EXTENSIONS_MAP {
+            mime_map.add_mimetype_line(line);
+        }
+        mime_map
+    }
+
+    /// Add extension map from a file.
+    fn parse_extension_map_file(&mut self, filename: &OsStr) {
+        let file = File::open(filename)
+            .unwrap_or_else(|e| abort!("failed to open {}: {}", filename.to_string_lossy(), e));
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line
+                .unwrap_or_else(|e| abort!("failed to read {}: {}", filename.to_string_lossy(), e));
+            self.add_mimetype_line(&line);
+        }
+    }
+
+    /// Add line from an extension map.
+    fn add_mimetype_line(&mut self, line: &str) {
+        let mut fields = line
+            .split(|c| matches!(c, ' ' | '\t'))
+            .filter(|field| field.len() > 0);
+        let mimetype = match fields.next() {
+            Some(mimetype) => mimetype,
+            None => return, // empty line
+        };
+        if mimetype.starts_with('#') {
+            return; // comment
+        }
+        for extension in fields {
+            self.0.insert(extension.to_string(), mimetype.to_string());
+        }
+    }
+
+    // TODO: return &str
+    /// Get content type for a URL.
+    fn url_content_type(&self, server: &bindings::server, url: &str) -> String {
+        let default_mimetype = unsafe { CStr::from_ptr(server.default_mimetype) }
+            .to_str()
+            .unwrap();
+        let extension = match url.rsplit('.').next() {
+            Some(extension) => extension,
+            None => return default_mimetype.to_string(),
+        };
+        match self.0.get(extension) {
+            Some(mimetype) => mimetype.clone(),
+            None => default_mimetype.to_string(),
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn parse_default_extension_map(server: *mut bindings::server) {
     let server = unsafe { server.as_mut().unwrap() };
-
+    let mime_map = MimeMap::parse_default_extension_map();
     assert!(server.mime_map.is_null());
-    let mut mime_map = MimeMap::new();
-
-    for line in DEFAULT_EXTENSIONS_MAP {
-        add_mimetype_line(&mut mime_map, line);
-    }
-
     server.mime_map = Box::into_raw(Box::new(mime_map)) as *mut libc::c_void;
 }
 
-/// Adds contents of specified file to mime_map list.
 #[no_mangle]
 pub extern "C" fn parse_extension_map_file(
     server: *mut bindings::server,
@@ -71,49 +119,9 @@ pub extern "C" fn parse_extension_map_file(
 ) {
     let server = unsafe { server.as_mut().unwrap() };
     assert!(!filename.is_null());
-    let filename = unsafe { CStr::from_ptr(filename) };
-    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut().unwrap() };
-
-    let file = File::open(OsStr::from_bytes(filename.to_bytes()))
-        .unwrap_or_else(|e| abort!("failed to open {}: {}", filename.to_string_lossy(), e));
-    for line in std::io::BufReader::new(file).lines() {
-        let line =
-            line.unwrap_or_else(|e| abort!("failed to read {}: {}", filename.to_string_lossy(), e));
-        add_mimetype_line(mime_map, &line);
-    }
-}
-
-/// Retrieves a mimetype for a URL.
-fn url_content_type(server: &bindings::server, url: &str) -> String {
-    let default_mimetype = unsafe { CStr::from_ptr(server.default_mimetype) }
-        .to_str()
-        .unwrap();
-    let mime_map = unsafe { (server.mime_map as *const MimeMap).as_ref().unwrap() };
-    let extension = match url.rsplit('.').next() {
-        Some(extension) => extension,
-        None => return default_mimetype.to_string(),
-    };
-    match mime_map.get(extension) {
-        Some(mimetype) => mimetype.clone(),
-        None => default_mimetype.to_string(),
-    }
-}
-
-/// Parses a mimetype line and adds the parsed data to MIME_MAP.
-fn add_mimetype_line(mime_map: &mut MimeMap, line: &str) {
-    let mut fields = line
-        .split(|c| matches!(c, ' ' | '\t'))
-        .filter(|field| field.len() > 0);
-    let mimetype = match fields.next() {
-        Some(mimetype) => mimetype,
-        None => return, // empty line
-    };
-    if mimetype.starts_with('#') {
-        return; // comment
-    }
-    for extension in fields {
-        mime_map.insert(extension.to_string(), mimetype.to_string());
-    }
+    let filename = OsStr::from_bytes(unsafe { CStr::from_ptr(filename) }.to_bytes());
+    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
+    mime_map.parse_extension_map_file(filename);
 }
 
 /// Set the keep alive field.
@@ -806,6 +814,9 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
         return;
     }
 
+    let mime_map =
+        unsafe { (server.mime_map as *const MimeMap).as_ref() }.expect("mime_map is null");
+
     let target; // path to the file we're going to return
     let mimetype; // the mimetype for that file
 
@@ -828,11 +839,11 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
             return;
         } else {
             let index_name = unsafe { CStr::from_ptr(server.index_name).to_str().unwrap() };
-            mimetype = url_content_type(server, index_name);
+            mimetype = mime_map.url_content_type(server, index_name);
         }
     } else {
         target = format!("{}{}", wwwroot, decoded_url);
-        mimetype = url_content_type(server, &decoded_url);
+        mimetype = mime_map.url_content_type(server, &decoded_url);
     }
 
     let file = match std::fs::OpenOptions::new()
