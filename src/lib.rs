@@ -46,13 +46,18 @@ const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
     "video/mp4               mp4",
 ];
 
-// TODO: store the default in here too
-struct MimeMap(HashMap<String, String>);
+struct MimeMap {
+    mimetypes: HashMap<String, String>,
+    default_mimetype: String,
+}
 
 impl MimeMap {
     /// Create MimeMap using the default extension map.
     fn parse_default_extension_map() -> MimeMap {
-        let mut mime_map = MimeMap(HashMap::new());
+        let mut mime_map = MimeMap {
+            mimetypes: HashMap::new(),
+            default_mimetype: "application/octet-stream".to_string(),
+        };
         for line in DEFAULT_EXTENSIONS_MAP {
             mime_map.add_mimetype_line(line);
         }
@@ -83,25 +88,37 @@ impl MimeMap {
             return; // comment
         }
         for extension in fields {
-            self.0.insert(extension.to_string(), mimetype.to_string());
+            self.mimetypes
+                .insert(extension.to_string(), mimetype.to_string());
         }
     }
 
     // TODO: return &str
     /// Get content type for a URL.
-    fn url_content_type(&self, server: &bindings::server, url: &str) -> String {
-        let default_mimetype = unsafe { CStr::from_ptr(server.default_mimetype) }
-            .to_str()
-            .unwrap();
+    fn url_content_type(&self, url: &str) -> String {
         let extension = match url.rsplit('.').next() {
             Some(extension) => extension,
-            None => return default_mimetype.to_string(),
+            None => return self.default_mimetype.clone(),
         };
-        match self.0.get(extension) {
+        match self.mimetypes.get(extension) {
             Some(mimetype) => mimetype.clone(),
-            None => default_mimetype.to_string(),
+            None => self.default_mimetype.clone(),
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn set_default_mimetype(
+    server: *mut bindings::server,
+    mimetype: *const libc::c_char,
+) {
+    let server = unsafe { server.as_mut().unwrap() };
+    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
+    assert!(!mimetype.is_null());
+    mime_map.default_mimetype = unsafe { CStr::from_ptr(mimetype) }
+        .to_str()
+        .unwrap()
+        .to_string();
 }
 
 #[no_mangle]
@@ -839,11 +856,11 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
             return;
         } else {
             let index_name = unsafe { CStr::from_ptr(server.index_name).to_str().unwrap() };
-            mimetype = mime_map.url_content_type(server, index_name);
+            mimetype = mime_map.url_content_type(index_name);
         }
     } else {
         target = format!("{}{}", wwwroot, decoded_url);
-        mimetype = mime_map.url_content_type(server, &decoded_url);
+        mimetype = mime_map.url_content_type(&decoded_url);
     }
 
     let file = match std::fs::OpenOptions::new()

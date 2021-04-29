@@ -299,7 +299,6 @@ struct server {
     int accepting;              /* set to 0 to stop accept()ing */
     int syslog_enabled;
     volatile int running;       /* signal handler sets this to false */
-    const char *default_mimetype;
     void *keep_alive_field;     /* used by Rust */
     void *mime_map;             /* used by Rust */
 };
@@ -338,7 +337,6 @@ static struct server srv = {
     .accepting = 1,
     .syslog_enabled = 0,
     .running = 1,
-    .default_mimetype = octet_stream,
     .keep_alive_field = NULL,
     .mime_map = NULL,
 };
@@ -455,6 +453,8 @@ static void add_forward_mapping(const char * const host,
  * be NULL terminated.
  */
 extern void parse_default_extension_map(struct server *srv);
+
+extern void set_default_mimetype(struct server *srv, const char *mimetype);
 
 /* ---------------------------------------------------------------------------
  * Adds contents of specified file to mime_map list.
@@ -778,7 +778,7 @@ static void parse_commandline(const int argc, char *argv[]) {
         else if (strcmp(argv[i], "--default-mimetype") == 0) {
             if (++i >= argc)
                 errx(1, "missing string after --default-mimetype");
-            srv.default_mimetype = argv[i];
+            set_default_mimetype(&srv, argv[i]);
         }
         else if (strcmp(argv[i], "--uid") == 0) {
             struct passwd *p;
