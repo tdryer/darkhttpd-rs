@@ -1153,15 +1153,6 @@ static void default_reply(struct connection *conn,
     free(reason);
 }
 
-/* Parses a single HTTP request field.  Returns string from end of [field] to
- * first \r, \n or end of request string.  Returns NULL if [field] can't be
- * matched.
- *
- * You need to remember to deallocate the result.
- * example: parse_field(conn, "Referer: ");
- */
-extern char *parse_field(const struct connection *conn, const char *field);
-
 /* Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the
  * url (/), the referer (if given) and the user-agent (if given).  Remember to
  * deallocate all these buffers.  The method will be returned in uppercase.

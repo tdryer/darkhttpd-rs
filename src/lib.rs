@@ -358,46 +358,29 @@ pub extern "C" fn free_rust_cstring(s: *mut libc::c_char) {
 /// You need to remember to deallocate the result.
 /// example: parse_field(conn, "Referer: ");
 #[no_mangle]
-pub extern "C" fn parse_field(
-    conn: *const Connection,
-    field: *const libc::c_char,
-) -> *mut libc::c_char {
-    let conn = unsafe { conn.as_ref().unwrap() };
+fn parse_field(conn: &Connection, field: &str) -> Option<String> {
     assert!(!conn.request.is_null());
     let request = unsafe { CStr::from_ptr(conn.request) };
-    assert!(!field.is_null());
-    let field = unsafe { CStr::from_ptr(field) };
 
     // TODO: Header names should be case-insensitive.
     // TODO: Parse the request instead of naively searching for the header name.
-    let field_start_pod = match find(field.to_bytes(), request.to_bytes()) {
+    let field_start_pod = match find(field.as_bytes(), request.to_bytes()) {
         Some(field_start_pod) => field_start_pod,
-        None => return std::ptr::null_mut(),
+        None => return None,
     };
 
-    let value_start_pos = field_start_pod + field.to_bytes().len();
+    let value_start_pos = field_start_pod + field.as_bytes().len();
     let mut value_end_pos = 0;
     for i in value_start_pos..request.to_bytes().len() {
         value_end_pos = i;
         let c = request.to_bytes()[i];
-        if c == b'\r' || c == b'\n' {
+        if matches!(c, b'\r' | b'\n') {
             break;
         }
     }
 
     let value = &request.to_bytes()[value_start_pos..value_end_pos];
-    unsafe { CString::from_vec_unchecked(value.to_vec()).into_raw() }
-}
-
-fn parse_field_2(conn: &Connection, field: &str) -> Option<String> {
-    // TODO: Rewrite this instead of calling parse_field.
-    let field = CString::new(field).unwrap();
-    let result = parse_field(conn, field.as_c_str().as_ptr());
-    if result.is_null() {
-        None
-    } else {
-        Some(unsafe { CString::from_raw(result) }.into_string().unwrap())
-    }
+    Some(String::from_utf8(value.to_vec()).unwrap())
 }
 
 /// Return index of first occurrence of `needle` in `haystack`.
@@ -413,7 +396,7 @@ fn find(needle: &[u8], haystack: &[u8]) -> Option<usize> {
 /// Parse a Range: field into range_begin and range_end. Only handles the first range if a list is
 /// given. Sets range_{begin,end}_given to 1 if either part of the range is given.
 fn parse_range_field(conn: &mut Connection) {
-    let range = match parse_field_2(conn, "Range: bytes=") {
+    let range = match parse_field(conn, "Range: bytes=") {
         Some(range) => range,
         None => return,
     };
@@ -712,7 +695,7 @@ fn not_modified(server: &Server, conn: &mut Connection) {
 fn get_forward_to_url(server: &Server, conn: &mut Connection) -> Option<&'static str> {
     let mut forward_to_url = None;
     if !server.forward_map.is_null() {
-        if let Some(host) = parse_field_2(conn, "Host: ") {
+        if let Some(host) = parse_field(conn, "Host: ") {
             let forward_mappings = unsafe {
                 slice::from_raw_parts(server.forward_map, server.forward_map_size as usize)
             };
@@ -902,7 +885,7 @@ pub extern "C" fn process_get(server: *const Server, conn: *mut Connection) {
         .as_secs();
 
     // handle If-Modified-Since
-    if let Some(if_mod_since) = parse_field_2(conn, "If-Modified-Since: ") {
+    if let Some(if_mod_since) = parse_field(conn, "If-Modified-Since: ") {
         if HttpDate(lastmod.try_into().unwrap()).to_string() == if_mod_since {
             not_modified(server, conn);
             return;
@@ -1019,7 +1002,7 @@ fn parse_request_internal(server: &Server, conn: &mut Connection) -> bool {
     }
 
     // parse connection header
-    if let Some(connection) = parse_field_2(conn, "Connection: ") {
+    if let Some(connection) = parse_field(conn, "Connection: ") {
         let connection = connection.to_lowercase();
         if connection == "close" {
             conn.conn_close = 1;
@@ -1034,13 +1017,13 @@ fn parse_request_internal(server: &Server, conn: &mut Connection) -> bool {
     }
 
     // parse important fields
-    if let Some(referer) = parse_field_2(conn, "Referer: ") {
+    if let Some(referer) = parse_field(conn, "Referer: ") {
         conn.referer = CString::new(referer).unwrap().into_raw();
     }
-    if let Some(user_agent) = parse_field_2(conn, "User-Agent: ") {
+    if let Some(user_agent) = parse_field(conn, "User-Agent: ") {
         conn.user_agent = CString::new(user_agent).unwrap().into_raw();
     }
-    if let Some(authorization) = parse_field_2(conn, "Authorization: ") {
+    if let Some(authorization) = parse_field(conn, "Authorization: ") {
         conn.authorization = CString::new(authorization).unwrap().into_raw();
     }
     parse_range_field(conn);
