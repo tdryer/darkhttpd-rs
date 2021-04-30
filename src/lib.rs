@@ -1031,6 +1031,57 @@ fn parse_request_internal(server: &Server, conn: &mut Connection) -> bool {
     true
 }
 
+/// Process a request: build the header and reply, advance state.
+#[no_mangle]
+pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+    server.num_requests += 1;
+
+    let result = parse_request_internal(server, conn);
+
+    let auth_key = if server.auth_key.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr(server.auth_key) }.to_str().unwrap())
+    };
+    let authorization = if conn.authorization.is_null() {
+        None
+    } else {
+        Some(
+            unsafe { CStr::from_ptr(conn.authorization) }
+                .to_str()
+                .unwrap(),
+        )
+    };
+    assert!(!conn.method.is_null());
+    let method = unsafe { CStr::from_ptr(conn.method) }.to_str().unwrap();
+
+    // TODO: remove C interface
+    if !result {
+        let reason = "You sent a request that the server couldn't understand.";
+        default_reply(server, conn, 400, "Bad Request", reason);
+    } else if auth_key.is_some() && (authorization.is_none() || authorization != auth_key) {
+        let reason = "Access denied due to invalid credentials.";
+        default_reply(server, conn, 401, "Unauthorized", reason);
+    } else if method == "GET" {
+        process_get(server, conn); // TODO: remove C interface
+    } else if method == "HEAD" {
+        process_get(server, conn); // TODO: remove C interface
+        conn.header_only = 1;
+    } else {
+        let reason = "The method you specified is not implemented.";
+        default_reply(server, conn, 501, "Not Implemented", reason);
+    }
+
+    // advance state
+    conn.state = bindings::connection_SEND_HEADER;
+
+    /* request not needed anymore */
+    unsafe { libc::free(conn.request as *mut libc::c_void) };
+    conn.request = std::ptr::null_mut(); // important: don't free it again later
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
