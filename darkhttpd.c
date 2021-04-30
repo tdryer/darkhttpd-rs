@@ -1064,8 +1064,8 @@ static void free_connection(struct connection *conn) {
     log_connection(conn);
     if (conn->socket != -1) xclose(conn->socket);
     if (conn->request != NULL) free(conn->request);
-    if (conn->method != NULL) free(conn->method);
-    if (conn->url != NULL) free(conn->url);
+    if (conn->method != NULL) free_rust_cstring(conn->method);
+    if (conn->url != NULL) free_rust_cstring(conn->url);
     if (conn->referer != NULL) free_rust_cstring(conn->referer);
     if (conn->user_agent != NULL) free_rust_cstring(conn->user_agent);
     if (conn->authorization != NULL) free_rust_cstring(conn->authorization);
@@ -1115,14 +1115,6 @@ static void recycle_connection(struct connection *conn) {
     conn->state = RECV_REQUEST; /* ready for another */
 }
 
-/* Uppercasify all characters in a string of given length. */
-static void strntoupper(char *str, const size_t length) {
-    size_t i;
-
-    for (i = 0; i < length; i++)
-        str[i] = (char)toupper(str[i]);
-}
-
 /* If a connection has been idle for more than timeout_secs, it will be
  * marked as DONE and killed off in httpd_poll().
  */
@@ -1170,94 +1162,11 @@ static void default_reply(struct connection *conn,
  */
 extern char *parse_field(const struct connection *conn, const char *field);
 
-/* Parse a Range: field into range_begin and range_end.  Only handles the
- * first range if a list is given.  Sets range_{begin,end}_given to 1 if
- * either part of the range is given.
- */
-extern void parse_range_field(struct connection *conn);
-
 /* Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the
  * url (/), the referer (if given) and the user-agent (if given).  Remember to
  * deallocate all these buffers.  The method will be returned in uppercase.
  */
-static int parse_request(struct connection *conn) {
-    size_t bound1, bound2;
-    char *tmp;
-    assert(conn->request_length == strlen(conn->request));
-
-    /* parse method */
-    for (bound1 = 0;
-        (bound1 < conn->request_length) &&
-        (conn->request[bound1] != ' ');
-        bound1++)
-            ;
-
-    conn->method = split_string(conn->request, 0, bound1);
-    strntoupper(conn->method, bound1);
-
-    /* parse url */
-    for (;
-        (bound1 < conn->request_length) &&
-        (conn->request[bound1] == ' ');
-        bound1++)
-            ;
-
-    if (bound1 == conn->request_length)
-        return 0; /* fail */
-
-    for (bound2 = bound1 + 1;
-        (bound2 < conn->request_length) &&
-        (conn->request[bound2] != ' ') &&
-        (conn->request[bound2] != '\r') &&
-        (conn->request[bound2] != '\n');
-        bound2++)
-            ;
-
-    conn->url = split_string(conn->request, bound1, bound2);
-
-    /* parse protocol to determine conn_close */
-    if (conn->request[bound2] == ' ') {
-        char *proto;
-        for (bound1 = bound2;
-            (bound1 < conn->request_length) &&
-            (conn->request[bound1] == ' ');
-            bound1++)
-                ;
-
-        for (bound2 = bound1 + 1;
-            (bound2 < conn->request_length) &&
-            (conn->request[bound2] != ' ') &&
-            (conn->request[bound2] != '\r');
-            bound2++)
-                ;
-
-        proto = split_string(conn->request, bound1, bound2);
-        if (strcasecmp(proto, "HTTP/1.1") == 0)
-            conn->conn_close = 0;
-        free(proto);
-    }
-
-    /* parse connection field */
-    tmp = parse_field(conn, "Connection: ");
-    if (tmp != NULL) {
-        if (strcasecmp(tmp, "close") == 0)
-            conn->conn_close = 1;
-        else if (strcasecmp(tmp, "keep-alive") == 0)
-            conn->conn_close = 0;
-        free_rust_cstring(tmp);
-    }
-
-    /* cmdline flag can be used to deny keep-alive */
-    if (!srv.want_keepalive)
-        conn->conn_close = 1;
-
-    /* parse important fields */
-    conn->referer = parse_field(conn, "Referer: ");
-    conn->user_agent = parse_field(conn, "User-Agent: ");
-    conn->authorization = parse_field(conn, "Authorization: ");
-    parse_range_field(conn);
-    return 1;
-}
+extern int parse_request(const struct server *srv, struct connection *conn);
 
 /* Process a GET/HEAD request. */
 extern void process_get(const struct server *srv, struct connection *conn);
@@ -1266,7 +1175,7 @@ extern void process_get(const struct server *srv, struct connection *conn);
 static void process_request(struct connection *conn) {
     srv.num_requests++;
 
-    if (!parse_request(conn)) {
+    if (!parse_request(&srv, conn)) {
         default_reply(conn, 400, "Bad Request",
             "You sent a request that the server couldn't understand.");
     }

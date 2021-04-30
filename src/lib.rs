@@ -416,15 +416,13 @@ fn find(needle: &[u8], haystack: &[u8]) -> Option<usize> {
 
 /// Parse a Range: field into range_begin and range_end. Only handles the first range if a list is
 /// given. Sets range_{begin,end}_given to 1 if either part of the range is given.
-#[no_mangle]
-pub extern "C" fn parse_range_field(conn: *mut bindings::connection) {
-    let field = CString::new("Range: bytes=").unwrap();
-    let range = parse_field(conn, field.as_c_str().as_ptr());
-    if range.is_null() {
-        return;
-    }
+fn parse_range_field(conn: &mut bindings::connection) {
+    let range = match parse_field_2(conn, "Range: bytes=") {
+        Some(range) => range,
+        None => return,
+    };
+
     // Valid because parse_field returns CString::into_raw
-    let range = unsafe { CString::from_raw(range) };
     let remaining = range.as_bytes();
 
     // parse number up to hyphen
@@ -436,7 +434,6 @@ pub extern "C" fn parse_range_field(conn: *mut bindings::connection) {
     }
     let remaining = &remaining[1..];
 
-    let conn = unsafe { conn.as_mut().unwrap() };
     if let Some(range_begin) = range_begin {
         conn.range_begin_given = 1;
         conn.range_begin = range_begin;
@@ -993,6 +990,77 @@ pub extern "C" fn process_get(server: *const bindings::server, conn: *mut bindin
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
     conn.http_code = 200;
+}
+
+/// Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the url (/), the referer
+/// (if given) and the user-agent (if given). Remember to deallocate all these buffers. The method
+/// will be returned in uppercase.
+#[no_mangle]
+pub extern "C" fn parse_request(
+    server: *const bindings::server,
+    conn: *mut bindings::connection,
+) -> libc::c_int {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+    parse_request_internal(server, conn) as libc::c_int
+}
+
+fn parse_request_internal(server: &bindings::server, conn: &mut bindings::connection) -> bool {
+    let request: &str = unsafe { CStr::from_ptr(conn.request) }.to_str().unwrap();
+    let mut lines = request.split(|c| matches!(c, '\r' | '\n'));
+    let mut request_line = lines.next().unwrap().split(' ');
+
+    // parse method
+    if let Some(method) = request_line.next() {
+        let method = CString::new(method.to_uppercase()).unwrap();
+        conn.method = method.into_raw();
+    } else {
+        return false;
+    }
+
+    // parse URL
+    if let Some(url) = request_line.next() {
+        let url = CString::new(url).unwrap();
+        conn.url = url.into_raw();
+    } else {
+        return false;
+    }
+
+    // parse protocol to determine conn.close
+    if let Some(protocol) = request_line.next() {
+        if protocol.to_uppercase() == "HTTP/1.1" {
+            conn.conn_close = 0;
+        }
+    }
+
+    // parse connection header
+    if let Some(connection) = parse_field_2(conn, "Connection: ") {
+        let connection = connection.to_lowercase();
+        if connection == "close" {
+            conn.conn_close = 1;
+        } else if connection == "keep-alive" {
+            conn.conn_close = 0;
+        }
+    }
+
+    // cmdline flag can be used to deny keep-alive
+    if server.want_keepalive == 0 {
+        conn.conn_close = 1;
+    }
+
+    // parse important fields
+    if let Some(referer) = parse_field_2(conn, "Referer: ") {
+        conn.referer = CString::new(referer).unwrap().into_raw();
+    }
+    if let Some(user_agent) = parse_field_2(conn, "User-Agent: ") {
+        conn.user_agent = CString::new(user_agent).unwrap().into_raw();
+    }
+    if let Some(authorization) = parse_field_2(conn, "Authorization: ") {
+        conn.authorization = CString::new(authorization).unwrap().into_raw();
+    }
+    parse_range_field(conn);
+
+    true
 }
 
 #[cfg(test)]
