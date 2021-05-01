@@ -1,4 +1,6 @@
+use std::cmp::max;
 use std::collections::HashMap;
+use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::ffi::OsStr;
 use std::ffi::{CStr, CString};
@@ -256,7 +258,7 @@ fn make_safe_url(url: &str) -> Option<String> {
     }
 
     // Always preserve leading slash
-    dst_index = std::cmp::max(dst_index, 1);
+    dst_index = max(dst_index, 1);
     url.truncate(dst_index);
 
     Some(String::from_utf8(url).unwrap())
@@ -1086,6 +1088,64 @@ pub extern "C" fn send_from_file(
     }
     // TODO: Implement fallback for platforms without sendfile.
     unsafe { libc::sendfile(s, fd, &mut ofs, size) }
+}
+
+/// Sending reply.
+#[no_mangle]
+pub extern "C" fn poll_send_reply(server: *mut Server, conn: *mut Connection) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+
+    assert!(conn.state == bindings::connection_SEND_REPLY);
+    assert!(conn.header_only == 0);
+    assert!(conn.reply_length >= conn.reply_sent);
+
+    // TODO: off_t can be wider than size_t?
+    let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
+
+    let sent;
+    if conn.reply_type == bindings::connection_REPLY_GENERATED {
+        assert!(!conn.reply.is_null());
+        // TODO: Clean up type casts
+        let reply = unsafe {
+            std::slice::from_raw_parts(
+                conn.reply as *const libc::c_void,
+                conn.reply_length.try_into().unwrap(),
+            )
+        };
+        let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
+        let buf = &reply[start..start + usize::try_from(send_len).unwrap()];
+        sent = unsafe { libc::send(conn.socket, buf.as_ptr(), buf.len(), 0) };
+    } else {
+        sent = send_from_file(
+            conn.socket,
+            conn.reply_fd,
+            conn.reply_start + conn.reply_sent,
+            send_len.try_into().unwrap(),
+        );
+    }
+    conn.last_active = server.now;
+    if sent < 1 {
+        // TODO: Add test coverage
+        if sent == -1 {
+            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
+                // would have blocked
+                return;
+            }
+        }
+        conn.conn_close = 1;
+        conn.state = bindings::connection_DONE;
+        return;
+    }
+    conn.reply_sent += libc::off_t::try_from(sent).unwrap();
+    conn.total_sent += libc::off_t::try_from(sent).unwrap();
+    server.total_out += u64::try_from(sent).unwrap();
+
+    // check if we're done sending
+    if conn.reply_sent == conn.reply_length {
+        conn.state = bindings::connection_DONE;
+    }
+    // TODO: Add test coverage
 }
 
 #[cfg(test)]

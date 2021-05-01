@@ -355,7 +355,7 @@ static gid_t drop_gid = INVALID_GID;
 /* Prototypes. */
 static void poll_recv_request(struct connection *conn);
 static void poll_send_header(struct connection *conn);
-static void poll_send_reply(struct connection *conn);
+extern void poll_send_reply(struct server *srv, struct connection *conn);
 
 /* close() that dies on error.  */
 static void xclose(const int fd) {
@@ -1254,7 +1254,7 @@ static void poll_send_header(struct connection *conn) {
             /* go straight on to body, don't go through another iteration of
              * the select() loop.
              */
-            poll_send_reply(conn);
+            poll_send_reply(&srv, conn);
         }
     }
 }
@@ -1265,67 +1265,6 @@ static void poll_send_header(struct connection *conn) {
  * read error.
  */
 extern ssize_t send_from_file(const int s, const int fd, off_t ofs, size_t size);
-
-/* Sending reply. */
-static void poll_send_reply(struct connection *conn)
-{
-    ssize_t sent;
-    /* off_t can be wider than size_t, avoid overflow in send_len */
-    const size_t max_size_t = ~((size_t)0);
-    off_t send_len = conn->reply_length - conn->reply_sent;
-    if (send_len > max_size_t) send_len = max_size_t;
-
-    assert(conn->state == SEND_REPLY);
-    assert(!conn->header_only);
-    if (conn->reply_type == REPLY_GENERATED) {
-        assert(conn->reply_length >= conn->reply_sent);
-        sent = send(conn->socket,
-            conn->reply + conn->reply_start + conn->reply_sent,
-            (size_t)send_len, 0);
-    }
-    else {
-        errno = 0;
-        assert(conn->reply_length >= conn->reply_sent);
-        sent = send_from_file(conn->socket, conn->reply_fd,
-            conn->reply_start + conn->reply_sent, (size_t)send_len);
-        if (debug && (sent < 1))
-            printf("send_from_file returned %lld (errno=%d %s)\n",
-                (long long)sent, errno, strerror(errno));
-    }
-    conn->last_active = srv.now;
-    if (debug)
-        printf("poll_send_reply(%d) sent %d: %llu+[%llu-%llu] of %llu\n",
-               conn->socket, (int)sent, llu(conn->reply_start),
-               llu(conn->reply_sent), llu(conn->reply_sent + sent - 1),
-               llu(conn->reply_length));
-
-    /* handle any errors (-1) or closure (0) in send() */
-    if (sent < 1) {
-        if (sent == -1) {
-            if (errno == EAGAIN) {
-                if (debug)
-                    printf("poll_send_reply would have blocked\n");
-                return;
-            }
-            if (debug)
-                printf("send(%d) error: %s\n", conn->socket, strerror(errno));
-        }
-        else if (sent == 0) {
-            if (debug)
-                printf("send(%d) closure\n", conn->socket);
-        }
-        conn->conn_close = 1;
-        conn->state = DONE;
-        return;
-    }
-    conn->reply_sent += sent;
-    conn->total_sent += (size_t)sent;
-    srv.total_out += (size_t)sent;
-
-    /* check if we're done sending */
-    if (conn->reply_sent == conn->reply_length)
-        conn->state = DONE;
-}
 
 /* Main loop of the httpd - a select() and then delegation to accept
  * connections, handle receiving of requests, and sending of replies.
@@ -1427,7 +1366,7 @@ static void httpd_poll(void) {
             break;
 
         case SEND_REPLY:
-            if (FD_ISSET(conn->socket, &send_set)) poll_send_reply(conn);
+            if (FD_ISSET(conn->socket, &send_set)) poll_send_reply(&srv, conn);
             break;
 
         case DONE:
