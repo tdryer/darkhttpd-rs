@@ -760,10 +760,7 @@ fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
 }
 
 /// Process a GET/HEAD request.
-#[no_mangle]
-pub extern "C" fn process_get(server: *const Server, conn: *mut Connection) {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+fn process_get(server: &Server, conn: &mut Connection) {
     let wwwroot = unsafe { CStr::from_ptr(server.wwwroot) }.to_str().unwrap();
     let index_name = unsafe { CStr::from_ptr(server.index_name) }
         .to_str()
@@ -1057,9 +1054,9 @@ pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
         let reason = "Access denied due to invalid credentials.";
         default_reply(server, conn, 401, "Unauthorized", reason);
     } else if method == "GET" {
-        process_get(server, conn); // TODO: remove C interface
+        process_get(server, conn);
     } else if method == "HEAD" {
-        process_get(server, conn); // TODO: remove C interface
+        process_get(server, conn);
         conn.header_only = 1;
     } else {
         let reason = "The method you specified is not implemented.";

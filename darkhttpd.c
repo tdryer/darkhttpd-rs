@@ -1153,9 +1153,6 @@ static void default_reply(struct connection *conn,
     free(reason);
 }
 
-/* Process a GET/HEAD request. */
-extern void process_get(const struct server *srv, struct connection *conn);
-
 /* Process a request: build the header and reply, advance state. */
 extern void process_request(const struct server *srv, struct connection *conn);
 
