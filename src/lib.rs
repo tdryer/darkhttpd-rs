@@ -807,7 +807,6 @@ fn process_get(server: &Server, conn: &mut Connection) {
                 // directory not existing. i.e.: Don't leak information.
                 let reason = "The URL you requested was not found.";
                 default_reply(server, conn, 404, "Not Found", &reason);
-                // TODO: free decoded_url?
                 return;
             }
             // return directory listing
@@ -1069,6 +1068,24 @@ pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
     /* request not needed anymore */
     unsafe { libc::free(conn.request as *mut libc::c_void) };
     conn.request = std::ptr::null_mut(); // important: don't free it again later
+}
+
+/// Send chunk on socket <s> from FILE *fp, starting at <ofs> and of size <size>.  Use sendfile()
+/// if possible since it's zero-copy on some platforms. Returns the number of bytes sent, 0 on
+/// closure, -1 if send() failed, -2 if read error.
+#[no_mangle]
+pub extern "C" fn send_from_file(
+    s: libc::c_int,
+    fd: libc::c_int,
+    mut ofs: libc::off_t,
+    mut size: libc::size_t,
+) -> libc::ssize_t {
+    // Limit truly ridiculous (LARGEFILE) requests.
+    if size > 1 << 20 {
+        size = 1 << 20;
+    }
+    // TODO: Implement fallback for platforms without sendfile.
+    unsafe { libc::sendfile(s, fd, &mut ofs, size) }
 }
 
 #[cfg(test)]

@@ -1264,61 +1264,7 @@ static void poll_send_header(struct connection *conn) {
  * Returns the number of bytes sent, 0 on closure, -1 if send() failed, -2 if
  * read error.
  */
-static ssize_t send_from_file(const int s, const int fd,
-        off_t ofs, size_t size) {
-#ifdef __FreeBSD__
-    off_t sent;
-    int ret = sendfile(fd, s, ofs, size, NULL, &sent, 0);
-
-    /* It is possible for sendfile to send zero bytes due to a blocking
-     * condition.  Handle this correctly.
-     */
-    if (ret == -1)
-        if (errno == EAGAIN)
-            if (sent == 0)
-                return -1;
-            else
-                return sent;
-        else
-            return -1;
-    else
-        return size;
-#else
-#if defined(__linux) || defined(__sun__)
-    /* Limit truly ridiculous (LARGEFILE) requests. */
-    if (size > 1<<20)
-        size = 1<<20;
-    return sendfile(s, fd, &ofs, size);
-#else
-    /* Fake sendfile() with read(). */
-# ifndef min
-#  define min(a,b) ( ((a)<(b)) ? (a) : (b) )
-# endif
-    char buf[1<<15];
-    size_t amount = min(sizeof(buf), size);
-    ssize_t numread;
-
-    if (lseek(fd, ofs, SEEK_SET) == -1)
-        err(1, "fseek(%d)", (int)ofs);
-    numread = read(fd, buf, amount);
-    if (numread == 0) {
-        fprintf(stderr, "premature eof on fd %d\n", fd);
-        return -1;
-    }
-    else if (numread == -1) {
-        fprintf(stderr, "error reading on fd %d: %s", fd, strerror(errno));
-        return -1;
-    }
-    else if ((size_t)numread != amount) {
-        fprintf(stderr, "read %zd bytes, expecting %zu bytes on fd %d\n",
-            numread, amount, fd);
-        return -1;
-    }
-    else
-        return send(s, buf, amount, 0);
-#endif
-#endif
-}
+extern ssize_t send_from_file(const int s, const int fd, off_t ofs, size_t size);
 
 /* Sending reply. */
 static void poll_send_reply(struct connection *conn)
