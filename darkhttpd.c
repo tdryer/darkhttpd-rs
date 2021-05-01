@@ -1153,12 +1153,6 @@ static void default_reply(struct connection *conn,
     free(reason);
 }
 
-/* Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the
- * url (/), the referer (if given) and the user-agent (if given).  Remember to
- * deallocate all these buffers.  The method will be returned in uppercase.
- */
-extern int parse_request(const struct server *srv, struct connection *conn);
-
 /* Process a GET/HEAD request. */
 extern void process_get(const struct server *srv, struct connection *conn);
 

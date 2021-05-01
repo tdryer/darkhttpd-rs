@@ -966,14 +966,7 @@ pub extern "C" fn process_get(server: *const Server, conn: *mut Connection) {
 /// Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the url (/), the referer
 /// (if given) and the user-agent (if given). Remember to deallocate all these buffers. The method
 /// will be returned in uppercase.
-#[no_mangle]
-pub extern "C" fn parse_request(server: *const Server, conn: *mut Connection) -> libc::c_int {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-    parse_request_internal(server, conn) as libc::c_int
-}
-
-fn parse_request_internal(server: &Server, conn: &mut Connection) -> bool {
+fn parse_request(server: &Server, conn: &mut Connection) -> bool {
     let request: &str = unsafe { CStr::from_ptr(conn.request) }.to_str().unwrap();
     let mut lines = request.split(|c| matches!(c, '\r' | '\n'));
     let mut request_line = lines.next().unwrap().split(' ');
@@ -1038,7 +1031,7 @@ pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
     let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
     server.num_requests += 1;
 
-    let result = parse_request_internal(server, conn);
+    let result = parse_request(server, conn);
 
     let auth_key = if server.auth_key.is_null() {
         None
@@ -1057,7 +1050,6 @@ pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
     assert!(!conn.method.is_null());
     let method = unsafe { CStr::from_ptr(conn.method) }.to_str().unwrap();
 
-    // TODO: remove C interface
     if !result {
         let reason = "You sent a request that the server couldn't understand.";
         default_reply(server, conn, 400, "Bad Request", reason);
