@@ -11,5 +11,8 @@ crate-type = ["staticlib"]
 libc = "0.2"
 chrono = "0.4.19"
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 bindgen = "0.58.1"

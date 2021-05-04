@@ -12,8 +12,7 @@ darkhttpd: darkhttpd.c target/debug/libdarkhttpd.a
 darkhttpd-static: darkhttpd.c
 	$(CC) -static $(CFLAGS) $(LDFLAGS) $(LIBS) darkhttpd.c -o $@
 
-.PHONY: target/debug/libdarkhttpd.a
-target/debug/libdarkhttpd.a:
+target/debug/libdarkhttpd.a: src/lib.rs
 	cargo build
 
 clean:
