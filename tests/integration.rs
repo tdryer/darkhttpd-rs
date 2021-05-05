@@ -56,6 +56,8 @@ impl Server {
                 dir.to_str().expect("path is not valid UTF-8"),
                 "--port",
                 &format!("{}", port),
+                "--addr",
+                "127.0.0.1",
             ])
             .args(args)
             .stdout(Stdio::null())
@@ -119,9 +121,21 @@ fn parse(response: &str) -> (&str, HashMap<&str, &str>, &str) {
     (request_line, headers, body)
 }
 
+fn test_forward(args: &[&str], url: &str, host: &str, location: &str) {
+    let root = tempdir().expect("failed to create tempdir");
+    let server = Server::with_args(root.path(), args);
+    let request_headers = map! { "Host" => host };
+    let response = server.get(url, request_headers);
+    let (status, headers, body) = parse(&response);
+
+    assert!(status.contains("301 Moved Permanently"));
+    assert_eq!(headers.get("Location"), Some(&location));
+    assert!(body.contains(location));
+
+    root.close().expect("failed to close tempdir");
+}
+
 const FORWARD_ARGS: &[&str] = &[
-    "--addr",
-    "127.0.0.1",
     "--forward",
     "example.com",
     "http://www.example.com",
@@ -132,32 +146,43 @@ const FORWARD_ARGS: &[&str] = &[
 
 #[test]
 fn forward_root() {
-    let root = tempdir().expect("failed to create tempdir");
-    let server = Server::with_args(root.path(), FORWARD_ARGS);
-    let request_headers = map! { "Host" => "example.com" };
-    let response = server.get("/", request_headers);
-    let (status, headers, body) = parse(&response);
-
-    assert!(status.contains("301 Moved Permanently"));
-    let expect = "http://www.example.com/";
-    assert_eq!(headers.get("Location"), Some(&expect));
-    assert!(body.contains(expect));
-
-    root.close().expect("failed to close tempdir");
+    test_forward(FORWARD_ARGS, "/", "example.com", "http://www.example.com/");
 }
 
 #[test]
 fn forward_relative() {
-    let root = tempdir().expect("failed to create tempdir");
-    let server = Server::with_args(root.path(), FORWARD_ARGS);
-    let request_headers = map! { "Host" => "secure.example.com" };
-    let response = server.get("/foo/bar", request_headers);
-    let (status, headers, body) = parse(&response);
+    test_forward(
+        FORWARD_ARGS,
+        "/foo/bar",
+        "secure.example.com",
+        "https://www.example.com/secure/foo/bar",
+    );
+}
 
-    assert!(status.contains("301 Moved Permanently"));
-    let expect = "https://www.example.com/secure/foo/bar";
-    assert_eq!(headers.get("Location"), Some(&expect));
-    assert!(body.contains(expect));
+const FORWARD_ALL_ARGS: &[&str] = &[
+    "--forward",
+    "example.com",
+    "http://www.example.com",
+    "--forward-all",
+    "http://catchall.example.com",
+];
 
-    root.close().expect("failed to close tempdir");
+#[test]
+fn forward_all_root() {
+    test_forward(
+        FORWARD_ALL_ARGS,
+        "/",
+        "not-example.com",
+        "http://catchall.example.com/",
+    );
+}
+
+#[test]
+fn forward_all_relative() {
+    test_forward(
+        FORWARD_ALL_ARGS,
+        "/foo/bar",
+        "still-not.example.com",
+        "http://catchall.example.com/foo/bar",
+    );
 }

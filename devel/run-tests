@@ -43,17 +43,6 @@ runtests() {
   kill $PID
   wait $PID
 
-  echo "===> run --forward-all tests"
-  ./a.out $DIR --port $PORT \
-    --forward example.com http://www.example.com \
-    --forward-all http://catchall.example.com \
-    >>test.out.stdout 2>>test.out.stderr &
-  PID=$!
-  kill -0 $PID || exit 1
-  python3 test_forward_all.py
-  kill $PID
-  wait $PID
-
   echo "===> run --no-server-id tests"
   ./a.out $DIR --port $PORT --no-server-id \
     >>test.out.stdout 2>>test.out.stderr &
