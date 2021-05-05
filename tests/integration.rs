@@ -234,3 +234,42 @@ fn no_listing() {
 fn listing() {
     test_listing(&[], true);
 }
+
+fn test_auth(auth: Option<&str>, authorized: bool) {
+    let root = tempdir().expect("failed to create tempdir");
+    let args = &["--auth", "myuser:mypass"];
+    let server = Server::with_args(root.path(), args);
+    let mut request_headers = HashMap::new();
+    if let Some(auth) = auth {
+        request_headers.insert("Authorization", auth);
+    }
+    let response = server.get("/", request_headers);
+    let (status, headers, _body) = parse(&response);
+
+    if authorized {
+        assert!(status.contains("200 OK"));
+    } else {
+        assert!(status.contains("401 Unauthorized"));
+        assert_eq!(
+            headers.get("WWW-Authenticate"),
+            Some(&"Basic realm=\"User Visible Realm\"")
+        );
+    }
+
+    root.close().expect("failed to close tempdir");
+}
+
+#[test]
+fn no_auth() {
+    test_auth(None, false);
+}
+
+#[test]
+fn with_auth() {
+    test_auth(Some("Basic bXl1c2VyOm15cGFzcw=="), true);
+}
+
+#[test]
+fn wrong_auth() {
+    test_auth(Some("Basic bXl1c2VyOndyb25ncGFzcw=="), false);
+}
