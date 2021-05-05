@@ -61,15 +61,6 @@ runtests() {
   kill $PID
   wait $PID
 
-  echo "===> run --no-listing tests"
-  ./a.out $DIR --port $PORT --no-listing \
-    >>test.out.stdout 2>>test.out.stderr &
-  PID=$!
-  kill -0 $PID || exit 1
-  python3 test_no_listing.py
-  kill $PID
-  wait $PID
-
   echo "===> run --timeout tests"
   ./a.out $DIR --port $PORT --timeout 1 \
     >>test.out.stdout 2>>test.out.stderr &

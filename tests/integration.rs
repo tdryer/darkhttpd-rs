@@ -209,3 +209,28 @@ fn no_server_id() {
 fn server_id() {
     test_server_id(&[], true);
 }
+
+fn test_listing(args: &[&str], listing: bool) {
+    let root = tempdir().expect("failed to create tempdir");
+    let server = Server::with_args(root.path(), args);
+    let response = server.get("/", HashMap::new());
+    let (status, _headers, _body) = parse(&response);
+
+    if listing {
+        assert!(status.contains("200 OK"));
+    } else {
+        assert!(status.contains("404 Not Found"));
+    }
+
+    root.close().expect("failed to close tempdir");
+}
+
+#[test]
+fn no_listing() {
+    test_listing(&["--no-listing"], false);
+}
+
+#[test]
+fn listing() {
+    test_listing(&[], true);
+}
