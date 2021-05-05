@@ -43,15 +43,6 @@ runtests() {
   kill $PID
   wait $PID
 
-  echo "===> run --no-server-id tests"
-  ./a.out $DIR --port $PORT --no-server-id \
-    >>test.out.stdout 2>>test.out.stderr &
-  PID=$!
-  kill -0 $PID || exit 1
-  python3 test_server_id.py
-  kill $PID
-  wait $PID
-
   echo "===> run mimemap tests"
   echo "test/type1 a1" > $DIR/mimemap
   echo "test/this-gets-replaced  ap2" >> $DIR/mimemap
