@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -272,4 +273,48 @@ fn with_auth() {
 #[test]
 fn wrong_auth() {
     test_auth(Some("Basic bXl1c2VyOndyb25ncGFzcw=="), false);
+}
+
+#[test]
+fn mimemap() {
+    let root = tempdir().expect("failed to create tempdir");
+    let mut mimemap_path = root.path().to_path_buf();
+    mimemap_path.push("mimemap");
+    let mut mimemap = File::create(&mimemap_path).unwrap();
+    let mimemap_lines = &[
+        "test/type1 a1",
+        "test/this-gets-replaced  ap2",
+        "# this is a comment",
+        "test/type3\tapp3\r",
+        "test/type2  ap2",
+        "  test/foo foo",
+        "",
+    ];
+    for line in mimemap_lines {
+        writeln!(mimemap, "{}", line).unwrap();
+    }
+    let args = &[
+        "--mimetypes",
+        &mimemap_path.to_str().unwrap(),
+        "--default-mimetype",
+        "test/default",
+    ];
+    let server = Server::with_args(root.path(), args);
+    let files = &[
+        ("test-file.a1", "test/type1"),
+        ("test-file.ap2", "test/type2"),
+        ("test-file.app3", "test/type3"),
+        ("test-file.appp4", "test/default"),
+        ("test-file.foo", "test/foo"),
+    ];
+    for (filename, content_type) in files {
+        let mut file_path = root.path().to_path_buf();
+        file_path.push(filename);
+        File::create(file_path).unwrap();
+        let response = server.get(&format!("/{}", filename), HashMap::new());
+        let (status, headers, _body) = parse(&response);
+        assert!(status.contains("200 OK"));
+        assert_eq!(headers.get("Content-Type"), Some(content_type));
+    }
+    root.close().expect("failed to close tempdir");
 }
