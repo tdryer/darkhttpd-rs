@@ -74,9 +74,11 @@ impl Server {
 
         server
     }
+    fn stream(&self) -> TcpStream {
+        TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
+    }
     fn get(&self, path: &str, headers: HashMap<&str, &str>) -> String {
-        let mut stream =
-            TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd");
+        let mut stream = self.stream();
         // Set timeouts to prevent tests from hanging
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
@@ -317,4 +319,18 @@ fn mimemap() {
         assert_eq!(headers.get("Content-Type"), Some(content_type));
     }
     root.close().expect("failed to close tempdir");
+}
+
+#[test]
+fn timeout() {
+    let root = tempdir().expect("failed to create tempdir");
+    let args = &["--timeout", "1"];
+    let server = Server::with_args(root.path(), args);
+    let mut stream = server.stream();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .unwrap();
+    let mut buf = String::new();
+    // expect EOF before read timeout expires
+    assert_eq!(stream.read_to_string(&mut buf).unwrap(), 0);
 }
