@@ -96,6 +96,16 @@ impl Server {
     fn root(&self) -> &Path {
         self.root.path()
     }
+    fn create_dir(&self, name: &str) {
+        let mut path = self.root().to_path_buf();
+        path.push(name);
+        create_dir(path).expect("failed to create directory");
+    }
+    fn create_file(&self, name: &str) -> File {
+        let mut path = self.root().to_path_buf();
+        path.push(name);
+        File::create(path).expect("failed to create file")
+    }
     fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
@@ -312,9 +322,7 @@ fn mimemap() {
         ("test-file.foo", "test/foo"),
     ];
     for (filename, content_type) in files {
-        let mut file_path = server.root().to_path_buf();
-        file_path.push(filename);
-        File::create(file_path).unwrap();
+        server.create_file(filename);
         let response = server.get(&format!("/{}", filename), HashMap::new());
         let (status, headers, _body) = parse(&response);
         assert!(status.contains("200 OK"));
@@ -338,9 +346,7 @@ fn timeout() {
 #[test]
 fn dirlist_escape() {
     let server = Server::with_args(&[]);
-    let mut file_path = server.root().to_path_buf();
-    file_path.push("escape(this)name");
-    let mut file = File::create(file_path).unwrap();
+    let mut file = server.create_file("escape(this)name");
     let mut buf = Vec::new();
     buf.resize(123456, 0);
     file.write_all(&buf).unwrap();
@@ -350,17 +356,10 @@ fn dirlist_escape() {
     assert!(body.contains("12345"));
 }
 
-// TODO: Add Server method?
-fn with_push(path: &Path, name: &str) -> std::path::PathBuf {
-    let mut path = path.to_path_buf();
-    path.push(name);
-    path
-}
-
 #[test]
 fn dir_redirect() {
     let server = Server::with_args(&[]);
-    create_dir(with_push(server.root(), "mydir")).unwrap();
+    server.create_dir("mydir");
     let response = server.get("/mydir", HashMap::new());
     let (status, headers, _body) = parse(&response);
     assert!(status.contains("301 Moved Permanently"));
