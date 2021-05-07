@@ -39,7 +39,7 @@ runtests() {
     >>test.out.stdout 2>>test.out.stderr &
   PID=$!
   kill -0 $PID || exit 1
-  python3 test.py
+  python3 test.py --verbose
   kill $PID
   wait $PID
 

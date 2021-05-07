@@ -333,4 +333,22 @@ fn timeout() {
     let mut buf = String::new();
     // expect EOF before read timeout expires
     assert_eq!(stream.read_to_string(&mut buf).unwrap(), 0);
+    root.close().expect("failed to close tempdir");
+}
+
+#[test]
+fn dirlist_escape() {
+    let root = tempdir().expect("failed to create tempdir");
+    let mut file_path = root.path().to_path_buf();
+    file_path.push("escape(this)name");
+    let mut file = File::create(file_path).unwrap();
+    let mut buf = Vec::new();
+    buf.resize(123456, 0);
+    file.write_all(&buf).unwrap();
+    let server = Server::with_args(root.path(), &[]);
+    let response = server.get("/", HashMap::new());
+    let (_status, _headers, body) = parse(&response);
+    assert!(body.contains("escape%28this%29name"));
+    assert!(body.contains("12345"));
+    root.close().expect("failed to close tempdir");
 }
