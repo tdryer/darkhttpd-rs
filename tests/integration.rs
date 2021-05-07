@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{create_dir, File};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -348,4 +348,21 @@ fn dirlist_escape() {
     let (_status, _headers, body) = parse(&response);
     assert!(body.contains("escape%28this%29name"));
     assert!(body.contains("12345"));
+}
+
+// TODO: Add Server method?
+fn with_push(path: &Path, name: &str) -> std::path::PathBuf {
+    let mut path = path.to_path_buf();
+    path.push(name);
+    path
+}
+
+#[test]
+fn dir_redirect() {
+    let server = Server::with_args(&[]);
+    create_dir(with_push(server.root(), "mydir")).unwrap();
+    let response = server.get("/mydir", HashMap::new());
+    let (status, headers, _body) = parse(&response);
+    assert!(status.contains("301 Moved Permanently"));
+    assert_eq!(headers.get("Location"), Some(&"/mydir/"));
 }

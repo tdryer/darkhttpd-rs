@@ -228,21 +228,6 @@ def setUpModule():
         ]:
         makeSimpleCases(*args)
 
-class TestDirRedirect(TestHelper):
-    def setUp(self):
-        self.url = "/mydir"
-        self.fn = WWWROOT + self.url
-        os.mkdir(self.fn)
-
-    def tearDown(self):
-        os.rmdir(self.fn)
-
-    def test_dir_redirect(self):
-        resp = self.get(self.url)
-        status, hdrs, body = parse(resp)
-        self.assertContains(status, "301 Moved Permanently")
-        self.assertEqual(hdrs["Location"], self.url+"/") # trailing slash
-
 class TestFileGet(TestHelper):
     def setUp(self):
         self.datalen = 2345
