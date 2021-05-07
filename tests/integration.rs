@@ -39,8 +39,22 @@ fn is_built() -> bool {
         .success()
 }
 
+struct ScopedChild(Child);
+
+impl Drop for ScopedChild {
+    fn drop(&mut self) {
+        self.0.kill().ok();
+    }
+}
+
+impl From<Child> for ScopedChild {
+    fn from(child: Child) -> Self {
+        ScopedChild(child)
+    }
+}
+
 struct Server {
-    child: Child,
+    _child: ScopedChild,
     port: u16,
     root: TempDir,
 }
@@ -67,15 +81,17 @@ impl Server {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .expect("failed to spawn darkhttpd");
-
-        // Create server early so it will be dropped if it fails to start.
-        let server = Self { child, port, root };
+            .expect("failed to spawn darkhttpd")
+            .into();
 
         // Wait until the socket is open.
         assert!(wait_for_port(port), "failed to connect to darkhttpd");
 
-        server
+        Self {
+            _child: child,
+            port,
+            root,
+        }
     }
     fn root(&self) -> &Path {
         self.root.path()
@@ -105,11 +121,6 @@ impl Server {
             .read_to_string(&mut buf)
             .expect("failed to read response");
         buf
-    }
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.child.kill().ok();
     }
 }
 
