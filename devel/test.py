@@ -246,38 +246,6 @@ class TestFileGet(TestHelper):
         os.unlink(self.fn)
         os.unlink(self.qfn)
 
-    def get_helper(self, url):
-        resp = self.get(url)
-        status, hdrs, body = parse(resp)
-        self.assertContains(status, "200 OK")
-        self.assertEqual(hdrs["Accept-Ranges"], "bytes")
-        self.assertEqual(hdrs["Content-Length"], str(self.datalen))
-        self.assertEqual(hdrs["Content-Type"], "image/jpeg")
-        self.assertContains(hdrs["Server"], "darkhttpd/")
-        assert body == self.data, [url, resp, status, hdrs, body]
-        self.assertEqual(body, self.data)
-
-    def test_file_get(self):
-        self.get_helper(self.url)
-
-    def test_file_get_urldecode(self):
-        self.get_helper(''.join(['%%%02x' % ord(x) for x in self.url]))
-
-    def test_file_get_redundant_dots(self):
-        self.get_helper("/././." + self.url)
-
-    def test_file_get_with_empty_query(self):
-        self.get_helper(self.url + "?")
-
-    def test_file_get_with_query(self):
-        self.get_helper(self.url + "?action=Submit")
-
-    def test_file_get_esc_question(self):
-        self.get_helper(self.qurl)
-
-    def test_file_get_esc_question_with_query(self):
-        self.get_helper(self.qurl + '?hello=world')
-
     def test_file_head(self):
         resp = self.get(self.url, method="HEAD")
         status, hdrs, body = parse(resp)

@@ -365,3 +365,76 @@ fn dir_redirect() {
     assert!(status.contains("301 Moved Permanently"));
     assert_eq!(headers.get("Location"), Some(&"/mydir/"));
 }
+
+fn get_random_data(len: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.resize(len, 0);
+    // TODO: Support binary data in parse method
+    // File::open("/dev/urandom")
+    //     .unwrap()
+    //     .read_exact(&mut buf)
+    //     .unwrap();
+    buf
+}
+
+fn test_file_get(path: &str) {
+    let server = Server::with_args(&[]);
+    let data = get_random_data(2345);
+    server.create_file("data.jpeg").write_all(&data).unwrap();
+    server.create_file("what?.jpg").write_all(&data).unwrap();
+    let response = server.get(path, HashMap::new());
+    let (status, headers, body) = parse(&response);
+    assert!(status.contains("200 OK"));
+    assert_eq!(headers.get("Accept-Ranges"), Some(&"bytes"));
+    assert_eq!(
+        headers.get("Content-Length"),
+        Some(&format!("{}", data.len()).as_str())
+    );
+    assert_eq!(headers.get("Content-Type"), Some(&"image/jpeg"));
+    assert!(headers.get("Server").unwrap().contains("darkhttpd/"));
+    assert_eq!(body, String::from_utf8(data).unwrap());
+}
+
+#[test]
+fn file_get() {
+    test_file_get("/data.jpeg");
+}
+
+fn percent_encode(input: &str) -> String {
+    input
+        .as_bytes()
+        .iter()
+        .map(|b| format!("%{:02x}", b))
+        .collect::<Vec<String>>()
+        .join("")
+}
+
+#[test]
+fn file_get_urldecode() {
+    test_file_get(&percent_encode("/data.jpeg"));
+}
+
+#[test]
+fn file_get_redundant_dots() {
+    test_file_get("/./././data.jpeg");
+}
+
+#[test]
+fn file_get_with_empty_query() {
+    test_file_get("/data.jpeg?");
+}
+
+#[test]
+fn file_get_with_query() {
+    test_file_get("/data.jpeg?action=Submit");
+}
+
+#[test]
+fn file_get_escaped_question() {
+    test_file_get("/what%3f.jpg");
+}
+
+#[test]
+fn file_get_escaped_question_with_query() {
+    test_file_get("/what%3f.jpg?hello=world");
+}
