@@ -121,7 +121,8 @@ impl Server {
         }
         write!(stream, "\n").unwrap();
         // Read response
-        Response::from_reader(&mut stream).expect("failed to read response")
+        let has_body = request.method != "HEAD";
+        Response::from_reader(&mut stream, has_body).expect("failed to read response")
     }
 }
 
@@ -138,6 +139,10 @@ impl Request {
             headers: HashMap::new(),
         }
     }
+    pub fn with_method(mut self, method: &'static str) -> Self {
+        self.method = method;
+        self
+    }
     pub fn with_header(mut self, name: &str, value: &str) -> Self {
         self.headers.insert(name.to_string(), value.to_string());
         self
@@ -151,14 +156,19 @@ pub struct Response {
     pub body: Option<Vec<u8>>,
 }
 impl Response {
-    pub fn from_reader<R: Read>(reader: &mut R) -> io::Result<Self> {
+    pub fn from_reader<R: Read>(reader: &mut R, has_body: bool) -> io::Result<Self> {
         let response_line = Self::read_header(reader)?;
         let headers = Self::read_headers(reader)?;
-        let body = headers
-            .get("Content-Length")
-            .map(|length| length.parse::<usize>().expect("invalid content length"))
-            .map(|length| Self::read_body(reader, length))
-            .transpose()?;
+        // TODO: Read the body lazily instead of using a flag?
+        let body = if has_body {
+            headers
+                .get("Content-Length")
+                .map(|length| length.parse::<usize>().expect("invalid content length"))
+                .map(|length| Self::read_body(reader, length))
+                .transpose()?
+        } else {
+            None
+        };
         Ok(Self {
             response_line,
             headers,

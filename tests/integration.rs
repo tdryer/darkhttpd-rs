@@ -229,7 +229,7 @@ fn test_file_get(path: &str) {
     assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
     assert_eq!(
         response.header("Content-Length"),
-        Some(format!("{}", data.len()).as_str())
+        Some(data.len().to_string().as_str())
     );
     assert_eq!(response.header("Content-Type"), Some("image/jpeg"));
     assert!(response.header("Server").unwrap().contains("darkhttpd/"));
@@ -278,4 +278,19 @@ fn file_get_escaped_question() {
 #[test]
 fn file_get_escaped_question_with_query() {
     test_file_get("/what%3f.jpg?hello=world");
+}
+
+#[test]
+fn file_head() {
+    let server = Server::with_args(&[]);
+    let data = get_random_data(2345);
+    server.create_file("data.jpeg").write_all(&data).unwrap();
+    let response = server.send(Request::new("/data.jpeg").with_method("HEAD"));
+    assert_eq!(response.status(), "200 OK");
+    assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
+    assert_eq!(
+        response.header("Content-Length"),
+        Some(data.len().to_string().as_str())
+    );
+    assert_eq!(response.header("Content-Type"), Some("image/jpeg"));
 }

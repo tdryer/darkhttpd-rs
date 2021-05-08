@@ -246,14 +246,6 @@ class TestFileGet(TestHelper):
         os.unlink(self.fn)
         os.unlink(self.qfn)
 
-    def test_file_head(self):
-        resp = self.get(self.url, method="HEAD")
-        status, hdrs, body = parse(resp)
-        self.assertContains(status, "200 OK")
-        self.assertEqual(hdrs["Accept-Ranges"], "bytes")
-        self.assertEqual(hdrs["Content-Length"], str(self.datalen))
-        self.assertEqual(hdrs["Content-Type"], "image/jpeg")
-
     def test_if_modified_since(self):
         resp1 = self.get(self.url, method="HEAD")
         status, hdrs, body = parse(resp1)
