@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{create_dir, File};
+use std::io;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -109,7 +110,8 @@ impl Server {
     fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
-    fn get(&self, path: &str, headers: HashMap<&str, &str>) -> String {
+    // TODO: Replace with get2
+    fn get(&self, path: &str, headers: HashMap<&str, &str>) -> Vec<u8> {
         let mut stream = self.stream();
         // Set timeouts to prevent tests from hanging
         stream
@@ -126,15 +128,21 @@ impl Server {
         }
         write!(stream, "\n").unwrap();
         // Read response
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         stream
-            .read_to_string(&mut buf)
+            .read_to_end(&mut buf)
             .expect("failed to read response");
         buf
     }
+    fn get2(&self, path: &str, headers: HashMap<&str, &str>) -> Response {
+        Response::from_reader(&mut self.get(path, headers).as_slice())
+            .expect("failed to read response")
+    }
 }
 
-fn parse(response: &str) -> (&str, HashMap<&str, &str>, &str) {
+// TODO: Replace with Response::from_reader
+fn parse(response: &[u8]) -> (&str, HashMap<&str, &str>, &str) {
+    let response = std::str::from_utf8(response).unwrap();
     let mut parts = response.splitn(2, "\r\n\r\n");
     let headers = parts.next().unwrap();
     let body = parts.next().unwrap();
@@ -149,6 +157,69 @@ fn parse(response: &str) -> (&str, HashMap<&str, &str>, &str) {
         headers.insert(key, value);
     }
     (request_line, headers, body)
+}
+
+/// HTTP Response from darkhttpd.
+struct Response {
+    response_line: String,
+    headers: HashMap<String, String>,
+    body: Option<Vec<u8>>,
+}
+impl Response {
+    fn from_reader<R: Read>(reader: &mut R) -> io::Result<Self> {
+        let response_line = Self::read_header(reader)?;
+        let headers = Self::read_headers(reader)?;
+        let body = headers
+            .get("Content-Length")
+            .map(|length| length.parse::<usize>().expect("invalid content length"))
+            .map(|length| Self::read_body(reader, length))
+            .transpose()?;
+        Ok(Self {
+            response_line,
+            headers,
+            body,
+        })
+    }
+    fn read_headers<R: Read>(reader: &mut R) -> io::Result<HashMap<String, String>> {
+        let mut headers = HashMap::new();
+        loop {
+            let header_line = Self::read_header(reader)?;
+            if header_line.is_empty() {
+                break;
+            }
+            let mut header = header_line.splitn(2, ": ");
+            let key = header.next().expect("invalid header").to_string();
+            let value = header.next().expect("invalid header").to_string();
+            headers.insert(key, value);
+        }
+        Ok(headers)
+    }
+    fn read_header<R: Read>(reader: &mut R) -> io::Result<String> {
+        read_until_slice(reader, b"\r\n")
+            .map(|vec| String::from_utf8(vec).expect("response header is not valid UTF-8"))
+    }
+    fn read_body<R: Read>(reader: &mut R, content_length: usize) -> io::Result<Vec<u8>> {
+        let mut body = Vec::new();
+        body.resize(content_length, 0);
+        reader.read_exact(&mut body)?;
+        Ok(body)
+    }
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).map(|name| name.as_str())
+    }
+}
+
+fn read_until_slice<R: Read>(reader: &mut R, separator: &[u8]) -> io::Result<Vec<u8>> {
+    let mut byte = [0; 1];
+    let mut buf = Vec::new();
+    loop {
+        reader.read_exact(&mut byte)?;
+        buf.push(byte[0]);
+        if buf.as_slice().ends_with(separator) {
+            buf.truncate(buf.len() - separator.len());
+            return Ok(buf);
+        }
+    }
 }
 
 fn test_forward(args: &[&str], url: &str, host: &str, location: &str) {
@@ -370,10 +441,10 @@ fn get_random_data(len: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.resize(len, 0);
     // TODO: Support binary data in parse method
-    // File::open("/dev/urandom")
-    //     .unwrap()
-    //     .read_exact(&mut buf)
-    //     .unwrap();
+    File::open("/dev/urandom")
+        .unwrap()
+        .read_exact(&mut buf)
+        .unwrap();
     buf
 }
 
@@ -382,17 +453,16 @@ fn test_file_get(path: &str) {
     let data = get_random_data(2345);
     server.create_file("data.jpeg").write_all(&data).unwrap();
     server.create_file("what?.jpg").write_all(&data).unwrap();
-    let response = server.get(path, HashMap::new());
-    let (status, headers, body) = parse(&response);
-    assert!(status.contains("200 OK"));
-    assert_eq!(headers.get("Accept-Ranges"), Some(&"bytes"));
+    let response = server.get2(path, HashMap::new());
+    assert!(response.response_line.contains("200 OK"));
+    assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
     assert_eq!(
-        headers.get("Content-Length"),
-        Some(&format!("{}", data.len()).as_str())
+        response.header("Content-Length"),
+        Some(format!("{}", data.len()).as_str())
     );
-    assert_eq!(headers.get("Content-Type"), Some(&"image/jpeg"));
-    assert!(headers.get("Server").unwrap().contains("darkhttpd/"));
-    assert_eq!(body, String::from_utf8(data).unwrap());
+    assert_eq!(response.header("Content-Type"), Some("image/jpeg"));
+    assert!(response.header("Server").unwrap().contains("darkhttpd/"));
+    assert_eq!(response.body, Some(data));
 }
 
 #[test]
