@@ -246,20 +246,6 @@ class TestFileGet(TestHelper):
         os.unlink(self.fn)
         os.unlink(self.qfn)
 
-    def test_if_modified_since(self):
-        resp1 = self.get(self.url, method="HEAD")
-        status, hdrs, body = parse(resp1)
-        lastmod = hdrs["Last-Modified"]
-
-        resp2 = self.get(self.url, method="GET", req_hdrs =
-            {"If-Modified-Since": lastmod })
-        status, hdrs, body = parse(resp2)
-        self.assertContains(status, "304 Not Modified")
-        self.assertEqual(hdrs["Accept-Ranges"], "bytes")
-        self.assertFalse("Last-Modified" in hdrs)
-        self.assertFalse("Content-Length" in hdrs)
-        self.assertFalse("Content-Type" in hdrs)
-
     def test_range_single(self):
         self.drive_range("5-5", "5-5/%d" % self.datalen,
                 1, self.data[5:6])

@@ -294,3 +294,19 @@ fn file_head() {
     );
     assert_eq!(response.header("Content-Type"), Some("image/jpeg"));
 }
+
+#[test]
+fn if_modified_since() {
+    let server = Server::with_args(&[]);
+    let data = get_random_data(2345);
+    server.create_file("data.jpeg").write_all(&data).unwrap();
+    let response = server.send(Request::new("/data.jpeg").with_method("HEAD"));
+    let last_mod = response.header("Last-Modified").unwrap();
+    let response =
+        server.send(Request::new("/data.jpeg").with_header("If-Modified-Since", last_mod));
+    assert_eq!(response.status(), "304 Not Modified");
+    assert_eq!(response.header("Last-Modified"), None);
+    assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
+    assert_eq!(response.header("Content-Length"), None);
+    assert_eq!(response.header("Content-Type"), None);
+}
