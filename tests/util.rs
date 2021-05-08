@@ -111,8 +111,7 @@ impl Server {
     pub fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
-    // TODO: Replace with get2
-    pub fn get(&self, path: &str, headers: HashMap<&str, &str>) -> Vec<u8> {
+    pub fn get(&self, path: &str, headers: HashMap<&str, &str>) -> Response {
         let mut stream = self.stream();
         // Set timeouts to prevent tests from hanging
         stream
@@ -129,35 +128,8 @@ impl Server {
         }
         write!(stream, "\n").unwrap();
         // Read response
-        let mut buf = Vec::new();
-        stream
-            .read_to_end(&mut buf)
-            .expect("failed to read response");
-        buf
+        Response::from_reader(&mut stream).expect("failed to read response")
     }
-    pub fn get2(&self, path: &str, headers: HashMap<&str, &str>) -> Response {
-        Response::from_reader(&mut self.get(path, headers).as_slice())
-            .expect("failed to read response")
-    }
-}
-
-// TODO: Replace with Response::from_reader
-pub fn parse(response: &[u8]) -> (&str, HashMap<&str, &str>, &str) {
-    let response = std::str::from_utf8(response).unwrap();
-    let mut parts = response.splitn(2, "\r\n\r\n");
-    let headers = parts.next().unwrap();
-    let body = parts.next().unwrap();
-
-    let mut header_lines = headers.split("\r\n");
-    let request_line = header_lines.next().unwrap();
-    let mut headers = HashMap::new();
-    for header_line in header_lines {
-        let mut header = header_line.splitn(2, ": ");
-        let key = header.next().unwrap();
-        let value = header.next().unwrap();
-        headers.insert(key, value);
-    }
-    (request_line, headers, body)
 }
 
 /// HTTP Response from darkhttpd.
@@ -207,6 +179,11 @@ impl Response {
     }
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(|name| name.as_str())
+    }
+    pub fn text(&self) -> Option<&str> {
+        self.body
+            .as_ref()
+            .map(|body| std::str::from_utf8(body).expect("body is not valid UTF-8"))
     }
 }
 
