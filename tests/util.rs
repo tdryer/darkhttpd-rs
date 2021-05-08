@@ -9,13 +9,6 @@ use std::thread::sleep;
 use std::time::Duration;
 use tempfile::{tempdir, TempDir};
 
-#[macro_export]
-macro_rules! map {
-    ($($k:expr => $v:expr),* $(,)?) => {
-        std::iter::Iterator::collect(std::array::IntoIter::new([$(($k, $v),)*]))
-    };
-}
-
 fn get_unused_port() -> Option<u16> {
     TcpListener::bind(("localhost", 0))
         .ok()
@@ -111,7 +104,7 @@ impl Server {
     pub fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
-    pub fn get(&self, path: &str, headers: HashMap<&str, &str>) -> Response {
+    pub fn send(&self, request: Request) -> Response {
         let mut stream = self.stream();
         // Set timeouts to prevent tests from hanging
         stream
@@ -121,14 +114,33 @@ impl Server {
             .set_write_timeout(Some(Duration::from_secs(1)))
             .unwrap();
         // Write request
-        write!(stream, "GET {}", path).unwrap();
+        write!(stream, "{} {}", request.method, request.path).unwrap();
         write!(stream, "\n").unwrap();
-        for (header_name, header_value) in headers {
+        for (header_name, header_value) in &request.headers {
             write!(stream, "{}: {}\n", header_name, header_value).unwrap();
         }
         write!(stream, "\n").unwrap();
         // Read response
         Response::from_reader(&mut stream).expect("failed to read response")
+    }
+}
+
+pub struct Request {
+    method: &'static str,
+    path: String,
+    headers: HashMap<String, String>,
+}
+impl Request {
+    pub fn new(path: &str) -> Self {
+        Self {
+            method: "GET",
+            path: path.to_string(),
+            headers: HashMap::new(),
+        }
+    }
+    pub fn with_header(mut self, name: &str, value: &str) -> Self {
+        self.headers.insert(name.to_string(), value.to_string());
+        self
     }
 }
 
