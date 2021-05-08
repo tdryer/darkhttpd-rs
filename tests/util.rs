@@ -134,8 +134,8 @@ impl Server {
 
 /// HTTP Response from darkhttpd.
 pub struct Response {
-    pub response_line: String,
-    pub headers: HashMap<String, String>,
+    response_line: String,
+    headers: HashMap<String, String>,
     pub body: Option<Vec<u8>>,
 }
 impl Response {
@@ -176,6 +176,12 @@ impl Response {
         body.resize(content_length, 0);
         reader.read_exact(&mut body)?;
         Ok(body)
+    }
+    pub fn status(&self) -> &str {
+        self.response_line
+            .splitn(2, " ")
+            .nth(1)
+            .expect("invalid response line")
     }
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(|name| name.as_str())
