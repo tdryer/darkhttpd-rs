@@ -246,23 +246,6 @@ class TestFileGet(TestHelper):
         os.unlink(self.fn)
         os.unlink(self.qfn)
 
-    def test_range_single_bad(self):
-        resp = self.get(self.url, req_hdrs = {"Range":
-            "bytes=%d-%d"%(self.datalen, self.datalen)})
-        status, hdrs, body = parse(resp)
-        self.assertContains(status, "416 Requested Range Not Satisfiable")
-
-    def test_range_bad_start(self):
-        resp = self.get(self.url, req_hdrs = {"Range": "bytes=%d-"%(
-            self.datalen*2)})
-        status, hdrs, body = parse(resp)
-        self.assertContains(status, "416 Requested Range Not Satisfiable")
-
-    def test_range_backwards(self):
-        resp = self.get(self.url, req_hdrs = {"Range": "bytes=20-10"})
-        status, hdrs, body = parse(resp)
-        self.assertContains(status, "416 Requested Range Not Satisfiable")
-
 class TestKeepAlive(TestFileGet):
     """
     Run all of TestFileGet but with a single long-lived connection.
