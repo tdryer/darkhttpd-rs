@@ -412,19 +412,26 @@ fn range_end_given_oversize() {
 }
 
 macro_rules! test_bad_range {
-    ($name:ident, $range_in:expr) => {
+    ($name:ident, $start:expr, $end:expr) => {
         #[test]
         fn $name() {
             let server = Server::with_args(&[]);
             let data = get_random_data(RANGE_DATA_LEN);
             server.create_file("data.jpeg").write_all(&data).unwrap();
-            let response =
-                server.send(Request::new("/data.jpeg").with_header("Range", &$range_in(&data)));
+            let range = format!(
+                "bytes={}-{}",
+                $start
+                    .map(|i: usize| i.to_string())
+                    .unwrap_or_else(String::new),
+                $end.map(|i: usize| i.to_string())
+                    .unwrap_or_else(String::new)
+            );
+            let response = server.send(Request::new("/data.jpeg").with_header("Range", &range));
             assert_eq!(response.status(), "416 Requested Range Not Satisfiable");
         }
     };
 }
 
-test_bad_range! { range_single_bad, |data: &[u8]| format!("bytes={}-{}", data.len(), data.len()) }
-test_bad_range! { range_bad_start, |data: &[u8]| format!("bytes={}-", data.len() * 2) }
-test_bad_range! { range_backwards, |data: &[u8]| "bytes=20-10".to_string() }
+test_bad_range! { range_single_bad, Some(RANGE_DATA_LEN), Some(RANGE_DATA_LEN) }
+test_bad_range! { range_bad_start, Some(RANGE_DATA_LEN * 2), None }
+test_bad_range! { range_backwards, Some(20), Some(10) }
