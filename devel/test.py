@@ -246,49 +246,11 @@ class TestFileGet(TestHelper):
         os.unlink(self.fn)
         os.unlink(self.qfn)
 
-    def test_range_single(self):
-        self.drive_range("5-5", "5-5/%d" % self.datalen,
-                1, self.data[5:6])
-
-    def test_range_single_first(self):
-        self.drive_range("0-0", "0-0/%d" % self.datalen,
-                1, self.data[0:1])
-
-    def test_range_single_last(self):
-        self.drive_range("%d-%d"%(self.datalen-1, self.datalen-1),
-        "%d-%d/%d"%(self.datalen-1, self.datalen-1, self.datalen),
-        1, self.data[-1:])
-
     def test_range_single_bad(self):
         resp = self.get(self.url, req_hdrs = {"Range":
             "bytes=%d-%d"%(self.datalen, self.datalen)})
         status, hdrs, body = parse(resp)
         self.assertContains(status, "416 Requested Range Not Satisfiable")
-
-    def test_range_reasonable(self):
-        self.drive_range("10-20", "10-20/%d" % self.datalen,
-            20-10+1, self.data[10:20+1])
-
-    def test_range_start_given(self):
-        self.drive_range("10-", "10-%d/%d" % (self.datalen-1, self.datalen),
-            self.datalen-10, self.data[10:])
-
-    def test_range_end_given(self):
-        self.drive_range("-25",
-            "%d-%d/%d"%(self.datalen-25, self.datalen-1, self.datalen),
-            25, self.data[-25:])
-
-    def test_range_beyond_end(self):
-        # expecting same result as test_range_end_given
-        self.drive_range("%d-%d"%(self.datalen-25, self.datalen*2),
-            "%d-%d/%d"%(self.datalen-25, self.datalen-1, self.datalen),
-            25, self.data[-25:])
-
-    def test_range_end_given_oversize(self):
-        # expecting full file
-        self.drive_range("-%d"%(self.datalen*3),
-            "0-%d/%d"%(self.datalen-1, self.datalen),
-            self.datalen, self.data)
 
     def test_range_bad_start(self):
         resp = self.get(self.url, req_hdrs = {"Range": "bytes=%d-"%(

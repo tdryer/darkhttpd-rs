@@ -310,3 +310,103 @@ fn if_modified_since() {
     assert_eq!(response.header("Content-Length"), None);
     assert_eq!(response.header("Content-Type"), None);
 }
+
+const RANGE_DATA_LEN: usize = 2345;
+
+fn test_range(
+    range_in: (Option<usize>, Option<usize>),
+    range_out: (usize, usize),
+    range_data: (usize, usize),
+) {
+    let server = Server::with_args(&[]);
+    let data = get_random_data(RANGE_DATA_LEN);
+    server.create_file("data.jpeg").write_all(&data).unwrap();
+    let response = server.send(Request::new("/data.jpeg").with_header(
+        "Range",
+        &format!(
+                "bytes={}-{}",
+                range_in
+                    .0
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(String::new),
+                range_in
+                    .1
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(String::new)
+            ),
+    ));
+    assert_eq!(response.status(), "206 Partial Content");
+    assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
+    assert_eq!(
+        response.header("Content-Range"),
+        Some(format!("bytes {}-{}/{}", range_out.0, range_out.1, RANGE_DATA_LEN).as_str())
+    );
+    assert_eq!(
+        response.header("Content-Length"),
+        Some((range_data.1 - range_data.0).to_string().as_str())
+    );
+    assert_eq!(&response.body.unwrap(), &data[range_data.0..range_data.1]);
+}
+
+#[test]
+fn range_single() {
+    test_range((Some(5), Some(5)), (5, 5), (5, 6));
+}
+
+#[test]
+fn range_single_first() {
+    test_range((Some(0), Some(0)), (0, 0), (0, 1))
+}
+
+#[test]
+fn range_single_last() {
+    let last = RANGE_DATA_LEN - 1;
+    test_range(
+        (Some(last), Some(last)),
+        (last, last),
+        (last, RANGE_DATA_LEN),
+    )
+}
+
+#[test]
+fn range_reasonable() {
+    test_range((Some(10), Some(20)), (10, 20), (10, 21))
+}
+
+#[test]
+fn range_start_given() {
+    test_range(
+        (Some(10), None),
+        (10, RANGE_DATA_LEN - 1),
+        (10, RANGE_DATA_LEN),
+    )
+}
+
+#[test]
+fn range_end_given() {
+    test_range(
+        (None, Some(25)),
+        (RANGE_DATA_LEN - 25, RANGE_DATA_LEN - 1),
+        (RANGE_DATA_LEN - 25, RANGE_DATA_LEN),
+    )
+}
+
+#[test]
+fn range_beyond_end() {
+    // expecting same result as range_end_given
+    test_range(
+        (Some(RANGE_DATA_LEN - 25), Some(RANGE_DATA_LEN * 2)),
+        (RANGE_DATA_LEN - 25, RANGE_DATA_LEN - 1),
+        (RANGE_DATA_LEN - 25, RANGE_DATA_LEN),
+    )
+}
+
+#[test]
+fn range_end_given_oversize() {
+    // expecting full file
+    test_range(
+        (None, Some(RANGE_DATA_LEN * 3)),
+        (0, RANGE_DATA_LEN - 1),
+        (0, RANGE_DATA_LEN),
+    )
+}
