@@ -1,9 +1,9 @@
+use rstest::*;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::time::Duration;
 use tempfile::NamedTempFile;
-use test_case::test_case;
 
 mod util;
 
@@ -432,21 +432,11 @@ test_bad_range! { range_backwards, range! { 20 => 10} }
 /// To avoid actually writing such a large file to disk, create a sparse file by seeking past the
 /// end of the file before writing. This relies on implementation-defined behaviour of the `seek`
 /// method and may only work on Linux.
-#[test_case(1 << 31, -3 ; "of size 2 GB with offset negative 3")]
-#[test_case(1 << 31, -2 ; "of size 2 GB with offset negative 2")]
-#[test_case(1 << 31, -1 ; "of size 2 GB with offset negative 1")]
-#[test_case(1 << 31,  0 ; "of size 2 GB with offset zero")]
-#[test_case(1 << 31,  1 ; "of size 2 GB with offset positive 1")]
-#[test_case(1 << 31,  2 ; "of size 2 GB with offset positive 2")]
-#[test_case(1 << 31,  3 ; "of size 2 GB with offset positive 3")]
-#[test_case(1 << 32, -3 ; "of size 4 GB with offset negative 3")]
-#[test_case(1 << 32, -2 ; "of size 4 GB with offset negative 2")]
-#[test_case(1 << 32, -1 ; "of size 4 GB with offset negative 1")]
-#[test_case(1 << 32,  0 ; "of size 4 GB with offset zero")]
-#[test_case(1 << 32,  1 ; "of size 4 GB with offset positive 1")]
-#[test_case(1 << 32,  2 ; "of size 4 GB with offset positive 2")]
-#[test_case(1 << 32,  3 ; "of size 4 GB with offset positive 3")]
-fn test_large_file(boundary: usize, offset: i64) {
+#[rstest]
+fn large_file(
+    #[values(1 << 31, 1 << 32)] boundary: usize,
+    #[values(-3, -2, -1, 0, 1, 2, 3)] offset: i64,
+) {
     let server = Server::with_args(&[]);
     let data = get_random_data(4096);
     let mut file = server.create_file("big.jpeg");
