@@ -1,4 +1,3 @@
-use rstest::*;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
@@ -433,11 +432,9 @@ test_bad_range! { range_backwards, range! { 20 => 10} }
 /// To avoid actually writing such a large file to disk, create a sparse file by seeking past the
 /// end of the file before writing. This relies on implementation-defined behaviour of the `seek`
 /// method and may only work on Linux.
-#[rstest]
-fn large_file(
-    #[values(1 << 31, 1 << 32)] boundary: usize,
-    #[values(-3, -2, -1, 0, 1, 2, 3)] offset: i64,
-) {
+#[test_case(1 << 31 ; "2 GB")]
+#[test_case(1 << 32 ; "4 GB")]
+fn large_file(boundary: usize) {
     let server = Server::with_args(&[]);
     let data = get_random_data(4096);
     let mut file = server.create_file("big.jpeg");
@@ -448,22 +445,24 @@ fn large_file(
     let file_size = file.metadata().unwrap().len();
     assert_eq!(file_size, pos + data.len() as u64);
 
-    let req_start = (boundary as i64 + offset) as usize;
-    let req_end = req_start + data.len() / 4 - 1;
-    let range_in = format!("{}-{}", req_start, req_end);
-    let range_out = format!("bytes {}/{}", range_in, file_size);
-    let data_start = req_start - pos as usize;
-    let data_end = data_start + data.len() / 4;
-    let response =
-        server.send(Request::new("/big.jpeg").with_header("Range", &format!("bytes={}", range_in)));
-    assert_eq!(response.status(), "206 Partial Content");
-    assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
-    assert_eq!(response.header("Content-Range"), Some(range_out.as_str()));
-    assert_eq!(
-        response.header("Content-Length"),
-        Some((data.len() / 4).to_string().as_str())
-    );
-    assert_eq!(&response.body.unwrap(), &data[data_start..data_end]);
+    for offset in -3..=3 {
+        let req_start = (boundary as i64 + offset) as usize;
+        let req_end = req_start + data.len() / 4 - 1;
+        let range_in = format!("{}-{}", req_start, req_end);
+        let range_out = format!("bytes {}/{}", range_in, file_size);
+        let data_start = req_start - pos as usize;
+        let data_end = data_start + data.len() / 4;
+        let response = server
+            .send(Request::new("/big.jpeg").with_header("Range", &format!("bytes={}", range_in)));
+        assert_eq!(response.status(), "206 Partial Content");
+        assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
+        assert_eq!(response.header("Content-Range"), Some(range_out.as_str()));
+        assert_eq!(
+            response.header("Content-Length"),
+            Some((data.len() / 4).to_string().as_str())
+        );
+        assert_eq!(&response.body.unwrap(), &data[data_start..data_end]);
+    }
 }
 
 const HTTP_CLIENT_CASES: &[(&str, &str)] = &[
