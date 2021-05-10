@@ -115,11 +115,14 @@ impl Server {
             .unwrap();
         // Write request
         write!(stream, "{} {}", request.method, request.path).unwrap();
-        write!(stream, "\n").unwrap();
-        for (header_name, header_value) in &request.headers {
-            write!(stream, "{}: {}\n", header_name, header_value).unwrap();
+        if request.version.len() > 0 {
+            write!(stream, " HTTP/{}", request.version).unwrap();
         }
-        write!(stream, "\n").unwrap();
+        write!(stream, "{}", request.line_ending).unwrap();
+        for (header_name, header_value) in &request.headers {
+            write!(stream, "{}: {}{}", header_name, header_value, request.line_ending).unwrap();
+        }
+        write!(stream, "{}", request.line_ending).unwrap();
         // Read response
         let has_body = request.method != "HEAD";
         Response::from_reader(&mut stream, has_body).expect("failed to read response")
@@ -130,6 +133,8 @@ pub struct Request {
     method: &'static str,
     path: String,
     headers: HashMap<String, String>,
+    line_ending: &'static str,
+    version: &'static str,
 }
 impl Request {
     pub fn new(path: &str) -> Self {
@@ -137,6 +142,8 @@ impl Request {
             method: "GET",
             path: path.to_string(),
             headers: HashMap::new(),
+            line_ending: "\n",
+            version: "",
         }
     }
     pub fn with_method(mut self, method: &'static str) -> Self {
@@ -145,6 +152,14 @@ impl Request {
     }
     pub fn with_header(mut self, name: &str, value: &str) -> Self {
         self.headers.insert(name.to_string(), value.to_string());
+        self
+    }
+    pub fn with_version(mut self, version: &'static str) -> Self {
+        self.version = version;
+        self
+    }
+    pub fn with_line_ending(mut self, line_ending: &'static str) -> Self {
+        self.line_ending = line_ending;
         self
     }
 }
