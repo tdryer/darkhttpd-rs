@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{Read, Write};
+use std::io::{Seek, SeekFrom};
 use std::time::Duration;
 use tempfile::NamedTempFile;
 
@@ -422,3 +423,64 @@ macro_rules! test_bad_range {
 test_bad_range! { range_single_bad, range! { RANGE_DATA_LEN => RANGE_DATA_LEN } }
 test_bad_range! { range_bad_start, range! { RANGE_DATA_LEN * 2 => } }
 test_bad_range! { range_backwards, range! { 20 => 10} }
+
+/// Create a file containing 4 KB of random data aligned at the center of the given boundary length
+/// (eg. 2 GB). Send a RANGE request for the 1 KB of data starting at the boundary length plus a
+/// small offset.
+///
+/// To avoid actually writing such a large file to disk, create a sparse file by seeking past the
+/// end of the file before writing. This relies on implementation-defined behaviour of the `seek`
+/// method and may only work on Linux.
+fn test_large_file(boundary: usize, offset: i64) {
+    let server = Server::with_args(&[]);
+    let data = get_random_data(4096);
+    let mut file = server.create_file("big.jpeg");
+    let pos = (boundary - (data.len() / 2)) as u64;
+    file.seek(SeekFrom::Start(pos)).unwrap();
+    assert_eq!(file.stream_position().unwrap(), pos);
+    file.write_all(&data).unwrap();
+    let file_size = file.metadata().unwrap().len();
+    assert_eq!(file_size, pos + data.len() as u64);
+
+    let req_start = (boundary as i64 + offset) as usize;
+    let req_end = req_start + data.len() / 4 - 1;
+    let range_in = format!("{}-{}", req_start, req_end);
+    let range_out = format!("bytes {}/{}", range_in, file_size);
+    let data_start = req_start - pos as usize;
+    let data_end = data_start + data.len() / 4;
+    let response =
+        server.send(Request::new("/big.jpeg").with_header("Range", &format!("bytes={}", range_in)));
+    assert_eq!(response.status(), "206 Partial Content");
+    assert_eq!(response.header("Accept-Ranges"), Some("bytes"));
+    assert_eq!(response.header("Content-Range"), Some(range_out.as_str()));
+    assert_eq!(
+        response.header("Content-Length"),
+        Some((data.len() / 4).to_string().as_str())
+    );
+    assert_eq!(&response.body.unwrap(), &data[data_start..data_end]);
+}
+
+macro_rules! test_large_file {
+    ($name:ident, $size:expr, $offset:expr) => {
+        #[test]
+        fn $name() {
+            test_large_file($size, $offset);
+        }
+    };
+}
+
+test_large_file! { large_file_2g_n3, 1 << 31, -3 }
+test_large_file! { large_file_2g_n2, 1 << 31, -2 }
+test_large_file! { large_file_2g_n1, 1 << 31, -1 }
+test_large_file! { large_file_2g_p0, 1 << 31, 0 }
+test_large_file! { large_file_2g_p1, 1 << 31, 1 }
+test_large_file! { large_file_2g_p2, 1 << 31, 2 }
+test_large_file! { large_file_2g_p3, 1 << 31, 3 }
+
+test_large_file! { large_file_4g_n3, 1 << 32, -3 }
+test_large_file! { large_file_4g_n2, 1 << 32, -2 }
+test_large_file! { large_file_4g_n1, 1 << 32, -1 }
+test_large_file! { large_file_4g_p0, 1 << 32, 0 }
+test_large_file! { large_file_4g_p1, 1 << 32, 1 }
+test_large_file! { large_file_4g_p2, 1 << 32, 2 }
+test_large_file! { large_file_4g_p3, 1 << 32, 3 }
