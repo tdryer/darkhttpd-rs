@@ -3,7 +3,7 @@ use std::fs::{create_dir, File};
 use std::io;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
@@ -91,10 +91,11 @@ impl Server {
     pub fn root(&self) -> &Path {
         self.root.path()
     }
-    pub fn create_dir(&self, name: &str) {
+    pub fn create_dir(&self, name: &str) -> PathBuf {
         let mut path = self.root().to_path_buf();
         path.push(name);
-        create_dir(path).expect("failed to create directory");
+        create_dir(&path).expect("failed to create directory");
+        path
     }
     pub fn create_file(&self, name: &str) -> File {
         let mut path = self.root().to_path_buf();
