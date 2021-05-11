@@ -105,8 +105,7 @@ impl Server {
     pub fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
-    pub fn send(&self, request: Request) -> Response {
-        let mut stream = self.stream();
+    pub fn send_stream(&self, stream: &mut TcpStream, request: Request) -> Response {
         // Set timeouts to prevent tests from hanging
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
@@ -121,12 +120,21 @@ impl Server {
         }
         write!(stream, "{}", request.line_ending).unwrap();
         for (header_name, header_value) in &request.headers {
-            write!(stream, "{}: {}{}", header_name, header_value, request.line_ending).unwrap();
+            write!(
+                stream,
+                "{}: {}{}",
+                header_name, header_value, request.line_ending
+            )
+            .unwrap();
         }
         write!(stream, "{}", request.line_ending).unwrap();
         // Read response
         let has_body = request.method != "HEAD";
-        Response::from_reader(&mut stream, has_body).expect("failed to read response")
+        Response::from_reader(stream, has_body).expect("failed to read response")
+    }
+    pub fn send(&self, request: Request) -> Response {
+        let mut stream = self.stream();
+        self.send_stream(&mut stream, request)
     }
 }
 
