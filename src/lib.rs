@@ -1145,7 +1145,6 @@ pub extern "C" fn poll_send_reply(server: *mut Server, conn: *mut Connection) {
     if conn.reply_sent == conn.reply_length {
         conn.state = bindings::connection_DONE;
     }
-    // TODO: Add test coverage
 }
 
 #[cfg(test)]

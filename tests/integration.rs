@@ -1,3 +1,4 @@
+use nix::sys::socket::{getsockopt, sockopt};
 use std::fs::File;
 use std::fs::{set_permissions, Permissions};
 use std::io;
@@ -5,6 +6,7 @@ use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use test_case::test_case;
@@ -609,4 +611,17 @@ fn keepalive_bad_version(version: &'static str) {
     let response = server.send_stream(&mut stream, Request::new("/").with_version(version));
     assert_eq!(response.status(), "200 OK");
     assert!(was_closed(&mut stream));
+}
+
+#[test]
+fn multiple_send() {
+    let server = Server::with_args(&[]);
+    let mut stream = server.stream();
+    // Use the client's send buffer size as an estimate of the server's send buffer size. Request
+    // twice as much data, to force the server to make multiple send calls.
+    let send_buffer_size = getsockopt(stream.as_raw_fd(), sockopt::SndBuf).unwrap();
+    let data = get_random_data(send_buffer_size * 2);
+    server.create_file("data.jpeg").write_all(&data).unwrap();
+    let response = server.send_stream(&mut stream, Request::new("/data.jpeg"));
+    assert_eq!(response.body.unwrap(), data);
 }
