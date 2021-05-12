@@ -12,6 +12,8 @@ use std::os::unix::io::IntoRawFd;
 use std::slice;
 
 use chrono::{TimeZone, Utc};
+use nix::errno::Errno;
+use nix::sys::socket;
 
 mod bindings;
 
@@ -1144,6 +1146,56 @@ pub extern "C" fn poll_send_reply(server: *mut Server, conn: *mut Connection) {
     // check if we're done sending
     if conn.reply_sent == conn.reply_length {
         conn.state = bindings::connection_DONE;
+    }
+}
+
+/// Sending header. Assumes conn->header is not NULL.
+#[no_mangle]
+pub extern "C" fn poll_send_header(server: *mut Server, conn: *mut Connection) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+
+    assert_eq!(conn.state, bindings::connection_SEND_HEADER);
+
+    assert!(!conn.header.is_null());
+    let header = unsafe { CStr::from_ptr(conn.header) };
+    assert_eq!(conn.header_length, header.to_bytes().len() as u64);
+
+    conn.last_active = server.now;
+
+    let sent = match socket::send(
+        conn.socket,
+        &header.to_bytes()
+            [conn.header_sent as usize..conn.header_length as usize - conn.header_sent as usize],
+        socket::MsgFlags::empty(),
+    ) {
+        Ok(sent) if sent > 0 => sent,
+        Err(nix::Error::Sys(Errno::EAGAIN)) => {
+            // would block
+            return;
+        }
+        _ => {
+            // closure or other error
+            conn.conn_close = 1;
+            conn.state = bindings::connection_DONE;
+            return;
+        }
+    };
+
+    assert!(sent > 0);
+    conn.header_sent += bindings::size_t::try_from(sent).unwrap();
+    conn.total_sent += libc::off_t::try_from(sent).unwrap();
+    server.total_out += u64::try_from(sent).unwrap();
+
+    // check if we're done sending header
+    if conn.header_sent == conn.header_length {
+        if conn.header_only == 1 {
+            conn.state = bindings::connection_DONE;
+        } else {
+            conn.state = bindings::connection_SEND_REPLY;
+            // go straight on to body, don't go through another iteration of the select() loop
+            poll_send_reply(server, conn);
+        }
     }
 }
 

@@ -10,11 +10,11 @@ crate-type = ["staticlib"]
 [dependencies]
 libc = "0.2"
 chrono = "0.4.19"
+nix = "0.20.0"
 
 [dev-dependencies]
 tempfile = "3"
 test-case = "1.1.0"
-nix = "0.20.0"
 
 [build-dependencies]
 bindgen = "0.58.1"

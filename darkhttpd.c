@@ -354,7 +354,7 @@ static gid_t drop_gid = INVALID_GID;
 
 /* Prototypes. */
 static void poll_recv_request(struct connection *conn);
-static void poll_send_header(struct connection *conn);
+extern void poll_send_header(struct server *srv, struct connection *conn);
 extern void poll_send_reply(struct server *srv, struct connection *conn);
 
 /* close() that dies on error.  */
@@ -1209,54 +1209,7 @@ static void poll_recv_request(struct connection *conn) {
      * going through another iteration of the select() loop.
      */
     if (conn->state == SEND_HEADER)
-        poll_send_header(conn);
-}
-
-/* Sending header.  Assumes conn->header is not NULL. */
-static void poll_send_header(struct connection *conn) {
-    ssize_t sent;
-
-    assert(conn->state == SEND_HEADER);
-    assert(conn->header_length == strlen(conn->header));
-
-    sent = send(conn->socket,
-                conn->header + conn->header_sent,
-                conn->header_length - conn->header_sent,
-                0);
-    conn->last_active = srv.now;
-    if (debug)
-        printf("poll_send_header(%d) sent %d bytes\n",
-               conn->socket, (int)sent);
-
-    /* handle any errors (-1) or closure (0) in send() */
-    if (sent < 1) {
-        if ((sent == -1) && (errno == EAGAIN)) {
-            if (debug) printf("poll_send_header would have blocked\n");
-            return;
-        }
-        if (debug && (sent == -1))
-            printf("send(%d) error: %s\n", conn->socket, strerror(errno));
-        conn->conn_close = 1;
-        conn->state = DONE;
-        return;
-    }
-    assert(sent > 0);
-    conn->header_sent += (size_t)sent;
-    conn->total_sent += (size_t)sent;
-    srv.total_out += (size_t)sent;
-
-    /* check if we're done sending header */
-    if (conn->header_sent == conn->header_length) {
-        if (conn->header_only)
-            conn->state = DONE;
-        else {
-            conn->state = SEND_REPLY;
-            /* go straight on to body, don't go through another iteration of
-             * the select() loop.
-             */
-            poll_send_reply(&srv, conn);
-        }
-    }
+        poll_send_header(&srv, conn);
 }
 
 /* Send chunk on socket <s> from FILE *fp, starting at <ofs> and of size
@@ -1362,7 +1315,7 @@ static void httpd_poll(void) {
             break;
 
         case SEND_HEADER:
-            if (FD_ISSET(conn->socket, &send_set)) poll_send_header(conn);
+            if (FD_ISSET(conn->socket, &send_set)) poll_send_header(&srv, conn);
             break;
 
         case SEND_REPLY:
