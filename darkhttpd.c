@@ -1212,13 +1212,6 @@ static void poll_recv_request(struct connection *conn) {
         poll_send_header(&srv, conn);
 }
 
-/* Send chunk on socket <s> from FILE *fp, starting at <ofs> and of size
- * <size>.  Use sendfile() if possible since it's zero-copy on some platforms.
- * Returns the number of bytes sent, 0 on closure, -1 if send() failed, -2 if
- * read error.
- */
-extern ssize_t send_from_file(const int s, const int fd, off_t ofs, size_t size);
-
 /* Main loop of the httpd - a select() and then delegation to accept
  * connections, handle receiving of requests, and sending of replies.
  */

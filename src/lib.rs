@@ -1,4 +1,4 @@
-use std::cmp::max;
+use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -13,6 +13,7 @@ use std::slice;
 
 use chrono::{TimeZone, Utc};
 use nix::errno::Errno;
+use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
 
 mod bindings;
@@ -1077,19 +1078,16 @@ pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
 /// Send chunk on socket <s> from FILE *fp, starting at <ofs> and of size <size>.  Use sendfile()
 /// if possible since it's zero-copy on some platforms. Returns the number of bytes sent, 0 on
 /// closure, -1 if send() failed, -2 if read error.
-#[no_mangle]
-pub extern "C" fn send_from_file(
+fn send_from_file(
     s: libc::c_int,
     fd: libc::c_int,
     mut ofs: libc::off_t,
-    mut size: libc::size_t,
-) -> libc::ssize_t {
+    size: libc::size_t,
+) -> nix::Result<usize> {
     // Limit truly ridiculous (LARGEFILE) requests.
-    if size > 1 << 20 {
-        size = 1 << 20;
-    }
+    let size = min(size, 1 << 20);
     // TODO: Implement fallback for platforms without sendfile.
-    unsafe { libc::sendfile(s, fd, &mut ofs, size) }
+    sendfile(s, fd, Some(&mut ofs), size)
 }
 
 /// Sending reply.
@@ -1111,13 +1109,13 @@ pub extern "C" fn poll_send_reply(server: *mut Server, conn: *mut Connection) {
         // TODO: Clean up type casts
         let reply = unsafe {
             std::slice::from_raw_parts(
-                conn.reply as *const libc::c_void,
+                conn.reply as *const u8,
                 conn.reply_length.try_into().unwrap(),
             )
         };
         let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
         let buf = &reply[start..start + usize::try_from(send_len).unwrap()];
-        sent = unsafe { libc::send(conn.socket, buf.as_ptr(), buf.len(), 0) };
+        sent = socket::send(conn.socket, buf, socket::MsgFlags::empty());
     } else {
         sent = send_from_file(
             conn.socket,
@@ -1127,18 +1125,19 @@ pub extern "C" fn poll_send_reply(server: *mut Server, conn: *mut Connection) {
         );
     }
     conn.last_active = server.now;
-    if sent < 1 {
-        // TODO: Add test coverage
-        if sent == -1 {
-            if std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN) {
-                // would have blocked
-                return;
-            }
+    let sent = match sent {
+        Ok(sent) if sent > 0 => sent,
+        Err(nix::Error::Sys(Errno::EAGAIN)) => {
+            // would block
+            return;
         }
-        conn.conn_close = 1;
-        conn.state = bindings::connection_DONE;
-        return;
-    }
+        _ => {
+            // closure or other error
+            conn.conn_close = 1;
+            conn.state = bindings::connection_DONE;
+            return;
+        }
+    };
     conn.reply_sent += libc::off_t::try_from(sent).unwrap();
     conn.total_sent += libc::off_t::try_from(sent).unwrap();
     server.total_out += u64::try_from(sent).unwrap();
