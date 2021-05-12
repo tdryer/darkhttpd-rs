@@ -198,7 +198,7 @@ fn timeout() {
 
 #[test]
 fn dirlist_escape() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let mut file = server.create_file("escape(this)name");
     let mut buf = Vec::new();
     buf.resize(123456, 0);
@@ -210,7 +210,7 @@ fn dirlist_escape() {
 
 #[test]
 fn dir_redirect() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     server.create_dir("mydir");
     let response = server.send(Request::new("/mydir"));
     assert_eq!(response.status(), "301 Moved Permanently");
@@ -228,7 +228,7 @@ fn get_random_data(len: usize) -> Vec<u8> {
 }
 
 fn test_file_get(path: &str) {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let data = get_random_data(2345);
     server.create_file("data.jpeg").write_all(&data).unwrap();
     server.create_file("what?.jpg").write_all(&data).unwrap();
@@ -290,7 +290,7 @@ fn file_get_escaped_question_with_query() {
 
 #[test]
 fn file_head() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let data = get_random_data(2345);
     server.create_file("data.jpeg").write_all(&data).unwrap();
     let response = server.send(Request::new("/data.jpeg").with_method("HEAD"));
@@ -305,7 +305,7 @@ fn file_head() {
 
 #[test]
 fn if_modified_since() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let data = get_random_data(2345);
     server.create_file("data.jpeg").write_all(&data).unwrap();
     let response = server.send(Request::new("/data.jpeg").with_method("HEAD"));
@@ -334,7 +334,7 @@ macro_rules! range {
 }
 
 fn test_range(range_in: String, range_out: (usize, usize), range_data: (usize, usize)) {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let data = get_random_data(RANGE_DATA_LEN);
     server.create_file("data.jpeg").write_all(&data).unwrap();
     let response = server.send(Request::new("/data.jpeg").with_header("Range", &range_in));
@@ -418,7 +418,7 @@ macro_rules! test_bad_range {
     ($name:ident, $range:expr) => {
         #[test]
         fn $name() {
-            let server = Server::with_args(&[]);
+            let server = Server::new();
             let data = get_random_data(RANGE_DATA_LEN);
             server.create_file("data.jpeg").write_all(&data).unwrap();
             let response = server.send(Request::new("/data.jpeg").with_header("Range", &$range));
@@ -441,7 +441,7 @@ test_bad_range! { range_backwards, range! { 20 => 10} }
 #[test_case(1 << 31 ; "2 GB")]
 #[test_case(1 << 32 ; "4 GB")]
 fn large_file(boundary: usize) {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let data = get_random_data(4096);
     let mut file = server.create_file("big.jpeg");
     let pos = (boundary - (data.len() / 2)) as u64;
@@ -485,7 +485,7 @@ const HTTP_CLIENT_CASES: &[(&str, &str)] = &[
 #[test_case("/dir/.." ; "no trailing slash")]
 #[test_case("//dir///..////" ; "extra slashes")]
 fn is_index(url: &str) {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     for (version, line_ending) in HTTP_CLIENT_CASES {
         let response = server.send(
             Request::new(url)
@@ -503,7 +503,7 @@ fn is_index(url: &str) {
 #[test_case("/../" ; "invalid up dir")]
 #[test_case("/./dir/./../../" ; "fancy invalid up dir")]
 fn is_invalid(url: &str) {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     for (version, line_ending) in HTTP_CLIENT_CASES {
         let response = server.send(
             Request::new(url)
@@ -520,7 +520,7 @@ fn is_invalid(url: &str) {
 #[test_case("//.d" ; "extra slashes 2")]
 #[test_case("/not_found.txt" ; "not found")]
 fn is_not_found(url: &str) {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     for (version, line_ending) in HTTP_CLIENT_CASES {
         let response = server.send(
             Request::new(url)
@@ -536,7 +536,7 @@ fn is_not_found(url: &str) {
 
 #[test]
 fn forbidden() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     set_permissions(
         server.create_dir("forbidden"),
         Permissions::from_mode(0o666), // -x
@@ -557,7 +557,7 @@ fn forbidden() {
 
 #[test]
 fn unreadable() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     set_permissions(
         server.create_dir("unreadable"),
         Permissions::from_mode(0o333), // -r
@@ -578,7 +578,7 @@ fn unreadable() {
 
 #[test]
 fn keepalive() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let mut stream = server.stream();
     for _ in 0..2 {
         let response = server.send_stream(&mut stream, Request::new("/").with_version("1.1"));
@@ -615,7 +615,7 @@ fn keepalive_bad_version(version: &'static str) {
 
 #[test]
 fn multiple_send() {
-    let server = Server::with_args(&[]);
+    let server = Server::new();
     let mut stream = server.stream();
     // Use the client's send buffer size as an estimate of the server's send buffer size. Request
     // twice as much data, to force the server to make multiple send calls.

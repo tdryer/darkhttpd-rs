@@ -54,6 +54,9 @@ pub struct Server {
     root: TempDir,
 }
 impl Server {
+    pub fn new() -> Self {
+        Self::with_args(&[])
+    }
     pub fn with_args(args: &[&str]) -> Self {
         // Check that the darkhttpd binary is up to date. We don't actually build it here because
         // test threads could race each other.
