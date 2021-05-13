@@ -627,3 +627,14 @@ fn multiple_send() {
     let response = server.send_stream(&mut stream, Request::new("/data.jpeg"));
     assert_eq!(response.body.unwrap(), data);
 }
+
+#[test]
+fn request_too_large() {
+    let server = Server::new();
+    let mut data = String::new();
+    for _ in 0..4000 {
+        data.push('x');
+    }
+    let response = server.send(Request::new("/").with_header("Data", &data));
+    assert_eq!(response.status(), "413 Request Entity Too Large");
+}

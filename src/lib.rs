@@ -450,24 +450,6 @@ fn parse_offset(data: &[u8]) -> (Option<libc::off_t>, &[u8]) {
 }
 
 /// A default reply for any (erroneous) occasion.
-#[no_mangle]
-pub extern "C" fn default_reply_impl(
-    server: *const Server,
-    conn: *mut Connection,
-    errcode: libc::c_int,
-    errname: *const libc::c_char,
-    reason: *const libc::c_char,
-) {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-    assert!(!errname.is_null());
-    let errname = unsafe { CStr::from_ptr(errname).to_str().unwrap() };
-    assert!(!reason.is_null());
-    let reason = unsafe { CStr::from_ptr(reason).to_str().unwrap() };
-
-    default_reply(server, conn, errcode, errname, reason);
-}
-
 fn default_reply(
     server: &Server,
     conn: &mut Connection,
@@ -1195,6 +1177,77 @@ pub extern "C" fn poll_send_header(server: *mut Server, conn: *mut Connection) {
             // go straight on to body, don't go through another iteration of the select() loop
             poll_send_reply(server, conn);
         }
+    }
+}
+
+// To prevent a malformed request from eating up too much memory, die once the request exceeds this
+// many bytes:
+const MAX_REQUEST_LENGTH: u64 = 4000;
+
+/// Receiving request.
+#[no_mangle]
+pub extern "C" fn poll_recv_request(server: *mut Server, conn: *mut Connection) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+
+    assert_eq!(conn.state, bindings::connection_RECV_REQUEST);
+    // TODO: Write directly to the request buffer
+    let mut buf = [0; 1 << 15];
+    let recvd = bindings::size_t::try_from(
+        match socket::recv(conn.socket, &mut buf, socket::MsgFlags::empty()) {
+            Ok(recvd) if recvd > 0 => recvd,
+            Err(nix::Error::Sys(Errno::EAGAIN)) => {
+                // would block
+                return;
+            }
+            _ => {
+                // closure or other error
+                conn.conn_close = 1;
+                conn.state = bindings::connection_DONE;
+                return;
+            }
+        },
+    )
+    .unwrap();
+    conn.last_active = server.now;
+
+    // append to conn.request
+    assert!(recvd > 0);
+    let new_request_length = usize::try_from(conn.request_length + recvd + 1).unwrap();
+    conn.request =
+        unsafe { libc::realloc(conn.request as *mut libc::c_void, new_request_length) as *mut i8 };
+    if conn.request.is_null() {
+        panic!("realloc failed");
+    }
+    let request =
+        unsafe { std::slice::from_raw_parts_mut(conn.request as *mut u8, new_request_length) };
+    request[conn.request_length.try_into().unwrap()
+        ..usize::try_from(conn.request_length + recvd).unwrap()]
+        .copy_from_slice(&buf[..recvd.try_into().unwrap()]);
+    conn.request_length += recvd;
+    request[usize::try_from(conn.request_length).unwrap()] = 0;
+    server.total_in += recvd;
+
+    // process request if we have all of it
+    // TODO: Handle HTTP pipelined requests
+    if request.len() > 2 && &request[request.len() - 1 - 2..request.len() - 1] == b"\n\n" {
+        process_request(server, conn);
+    } else if request.len() > 4 && &request[request.len() - 1 - 4..request.len() - 1] == b"\r\n\r\n"
+    {
+        process_request(server, conn);
+    }
+
+    // die if it's too large
+    if conn.request_length > MAX_REQUEST_LENGTH {
+        let reason = "Your request was dropped because it was too long.";
+        default_reply(server, conn, 413, "Request Entity Too Large", reason);
+        conn.state = bindings::connection_SEND_HEADER;
+    }
+
+    // if we've moved on to the next state, try to send right away, instead of going through
+    // another iteration of the select() loop.
+    if conn.state == bindings::connection_SEND_HEADER {
+        poll_send_header(server, conn);
     }
 }
 

@@ -341,11 +341,6 @@ static struct server srv = {
     .mime_map = NULL,
 };
 
-/* To prevent a malformed request from eating up too much memory, die once the
- * request exceeds this many bytes:
- */
-#define MAX_REQUEST_LENGTH 4000
-
 #define INVALID_UID ((uid_t) -1)
 #define INVALID_GID ((gid_t) -1)
 
@@ -353,7 +348,7 @@ static uid_t drop_uid = INVALID_UID;
 static gid_t drop_gid = INVALID_GID;
 
 /* Prototypes. */
-static void poll_recv_request(struct connection *conn);
+extern void poll_recv_request(struct server *srv, struct connection *conn);
 extern void poll_send_header(struct server *srv, struct connection *conn);
 extern void poll_send_reply(struct server *srv, struct connection *conn);
 
@@ -956,7 +951,7 @@ static void accept_connection(void) {
     /* Try to read straight away rather than going through another iteration
      * of the select() loop.
      */
-    poll_recv_request(conn);
+    poll_recv_request(&srv, conn);
 }
 
 /* Should this character be logencoded?
@@ -1130,87 +1125,8 @@ static void poll_check_timeout(struct connection *conn) {
     }
 }
 
-extern void default_reply_impl(const struct server *srv,
-        struct connection *conn, const int errcode, const char *errname,
-        const char *reason);
-
-/* A default reply for any (erroneous) occasion. */
-static void default_reply(struct connection *conn,
-        const int errcode, const char *errname, const char *format, ...)
-        __printflike(4, 5);
-static void default_reply(struct connection *conn,
-        const int errcode, const char *errname, const char *format, ...) {
-    char *reason;
-    va_list va;
-
-    va_start(va, format);
-    xvasprintf(&reason, format, va);
-    va_end(va);
-
-    /* C wrapper just deals with formatting. */
-    default_reply_impl(&srv, conn, errcode, errname, reason);
-
-    free(reason);
-}
-
 /* Process a request: build the header and reply, advance state. */
 extern void process_request(const struct server *srv, struct connection *conn);
-
-/* Receiving request. */
-static void poll_recv_request(struct connection *conn) {
-    char buf[1<<15];
-    ssize_t recvd;
-
-    assert(conn->state == RECV_REQUEST);
-    recvd = recv(conn->socket, buf, sizeof(buf), 0);
-    if (debug)
-        printf("poll_recv_request(%d) got %d bytes\n",
-               conn->socket, (int)recvd);
-    if (recvd < 1) {
-        if (recvd == -1) {
-            if (errno == EAGAIN) {
-                if (debug) printf("poll_recv_request would have blocked\n");
-                return;
-            }
-            if (debug) printf("recv(%d) error: %s\n",
-                conn->socket, strerror(errno));
-        }
-        conn->conn_close = 1;
-        conn->state = DONE;
-        return;
-    }
-    conn->last_active = srv.now;
-
-    /* append to conn->request */
-    assert(recvd > 0);
-    conn->request = xrealloc(
-        conn->request, conn->request_length + (size_t)recvd + 1);
-    memcpy(conn->request+conn->request_length, buf, (size_t)recvd);
-    conn->request_length += (size_t)recvd;
-    conn->request[conn->request_length] = 0;
-    srv.total_in += (size_t)recvd;
-
-    /* process request if we have all of it */
-    if ((conn->request_length > 2) &&
-        (memcmp(conn->request+conn->request_length-2, "\n\n", 2) == 0))
-            process_request(&srv, conn);
-    else if ((conn->request_length > 4) &&
-        (memcmp(conn->request+conn->request_length-4, "\r\n\r\n", 4) == 0))
-            process_request(&srv, conn);
-
-    /* die if it's too large */
-    if (conn->request_length > MAX_REQUEST_LENGTH) {
-        default_reply(conn, 413, "Request Entity Too Large",
-                      "Your request was dropped because it was too long.");
-        conn->state = SEND_HEADER;
-    }
-
-    /* if we've moved on to the next state, try to send right away, instead of
-     * going through another iteration of the select() loop.
-     */
-    if (conn->state == SEND_HEADER)
-        poll_send_header(&srv, conn);
-}
 
 /* Main loop of the httpd - a select() and then delegation to accept
  * connections, handle receiving of requests, and sending of replies.
@@ -1304,7 +1220,7 @@ static void httpd_poll(void) {
         poll_check_timeout(conn);
         switch (conn->state) {
         case RECV_REQUEST:
-            if (FD_ISSET(conn->socket, &recv_set)) poll_recv_request(conn);
+            if (FD_ISSET(conn->socket, &recv_set)) poll_recv_request(&srv, conn);
             break;
 
         case SEND_HEADER:
@@ -1332,7 +1248,7 @@ static void httpd_poll(void) {
                 /* and go right back to recv_request without going through
                  * select() again.
                  */
-                poll_recv_request(conn);
+                poll_recv_request(&srv, conn);
             }
         }
     }
