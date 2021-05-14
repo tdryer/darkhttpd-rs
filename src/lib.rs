@@ -1,15 +1,13 @@
 use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::convert::TryFrom;
-use std::convert::TryInto;
-use std::ffi::OsStr;
-use std::ffi::{CStr, CString};
+use std::convert::{TryFrom, TryInto};
+use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::BufRead;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::ptr::null_mut;
 use std::slice;
 
@@ -1473,6 +1471,16 @@ pub extern "C" fn new_connection(server: *const Server) -> *mut Connection {
         total_sent: 0,
     };
     Box::into_raw(Box::new(conn))
+}
+
+/// Make the specified socket non-blocking.
+#[no_mangle]
+pub extern "C" fn nonblock_socket(sock: libc::c_int) {
+    let stream = unsafe { TcpStream::from_raw_fd(sock) };
+    stream
+        .set_nonblocking(true)
+        .expect("set_nonblocking failed");
+    stream.into_raw_fd();
 }
 
 #[cfg(test)]

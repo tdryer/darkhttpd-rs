@@ -413,15 +413,7 @@ static unsigned int xasprintf(char **ret, const char *format, ...) {
 }
 
 /* Make the specified socket non-blocking. */
-static void nonblock_socket(const int sock) {
-    int flags = fcntl(sock, F_GETFL);
-
-    if (flags == -1)
-        err(1, "fcntl(F_GETFL)");
-    flags |= O_NONBLOCK;
-    if (fcntl(sock, F_SETFL, flags) == -1)
-        err(1, "fcntl() to set O_NONBLOCK");
-}
+extern void nonblock_socket(const int sock);
 
 /* Split string out of src with range [left:right-1] */
 extern char *split_string(const char *src, const size_t left, const size_t right);
