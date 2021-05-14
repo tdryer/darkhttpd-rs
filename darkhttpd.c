@@ -958,43 +958,7 @@ extern void log_connection(const struct server *srv, const struct connection *co
 extern void free_connection(struct server *srv, struct connection *conn);
 
 /* Recycle a finished connection for HTTP/1.1 Keep-Alive. */
-static void recycle_connection(struct connection *conn) {
-    int socket_tmp = conn->socket;
-    if (debug)
-        printf("recycle_connection(%d)\n", socket_tmp);
-    conn->socket = -1; /* so free_connection() doesn't close it */
-    free_connection(&srv, conn);
-    conn->socket = socket_tmp;
-
-    /* don't reset conn->client */
-    conn->request = NULL;
-    conn->request_length = 0;
-    conn->method = NULL;
-    conn->url = NULL;
-    conn->referer = NULL;
-    conn->user_agent = NULL;
-    conn->authorization = NULL;
-    conn->range_begin = 0;
-    conn->range_end = 0;
-    conn->range_begin_given = 0;
-    conn->range_end_given = 0;
-    conn->header = NULL;
-    conn->header_length = 0;
-    conn->header_sent = 0;
-    conn->header_dont_free = 0;
-    conn->header_only = 0;
-    conn->http_code = 0;
-    conn->conn_close = 1;
-    conn->reply = NULL;
-    conn->reply_dont_free = 0;
-    conn->reply_fd = -1;
-    conn->reply_start = 0;
-    conn->reply_length = 0;
-    conn->reply_sent = 0;
-    conn->total_sent = 0;
-
-    conn->state = RECV_REQUEST; /* ready for another */
-}
+extern void recycle_connection(struct server *srv, struct connection *conn);
 
 /* If a connection has been idle for more than timeout_secs, it will be
  * marked as DONE and killed off in httpd_poll().
@@ -1130,7 +1094,7 @@ static void httpd_poll(void) {
                 free_connection(&srv, conn);
                 free(conn);
             } else {
-                recycle_connection(conn);
+                recycle_connection(&srv, conn);
                 /* and go right back to recv_request without going through
                  * select() again.
                  */

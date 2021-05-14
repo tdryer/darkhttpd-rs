@@ -10,6 +10,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::IntoRawFd;
+use std::ptr::null_mut;
 use std::slice;
 
 use chrono::{Local, TimeZone, Utc};
@@ -1055,7 +1056,7 @@ pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
 
     /* request not needed anymore */
     unsafe { libc::free(conn.request as *mut libc::c_void) };
-    conn.request = std::ptr::null_mut(); // important: don't free it again later
+    conn.request = null_mut(); // important: don't free it again later
 }
 
 /// Send chunk on socket <s> from FILE *fp, starting at <ofs> and of size <size>.  Use sendfile()
@@ -1382,6 +1383,47 @@ pub extern "C" fn free_connection(server: *mut Server, conn: *mut Connection) {
     }
     // If we ran out of sockets, try to resume accepting.
     server.accepting = 1;
+}
+
+/// Recycle a finished connection for HTTP/1.1 Keep-Alive.
+#[no_mangle]
+pub extern "C" fn recycle_connection(server: *mut Server, conn: *mut Connection) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+
+    let socket_tmp = conn.socket;
+    conn.socket = -1; // so free_connection() doesn't close it
+    free_connection(server, conn);
+    conn.socket = socket_tmp;
+
+    // don't reset conn->client
+    conn.request = null_mut();
+    conn.request_length = 0;
+    conn.method = null_mut();
+    conn.url = null_mut();
+    conn.referer = null_mut();
+    conn.user_agent = null_mut();
+    conn.authorization = null_mut();
+    conn.range_begin = 0;
+    conn.range_end = 0;
+    conn.range_begin_given = 0;
+    conn.range_end_given = 0;
+    conn.header = null_mut();
+    conn.header_length = 0;
+    conn.header_sent = 0;
+    conn.header_dont_free = 0;
+    conn.header_only = 0;
+    conn.http_code = 0;
+    conn.conn_close = 1;
+    conn.reply = null_mut();
+    conn.reply_dont_free = 0;
+    conn.reply_fd = -1;
+    conn.reply_start = 0;
+    conn.reply_length = 0;
+    conn.reply_sent = 0;
+    conn.total_sent = 0;
+
+    conn.state = bindings::connection_RECV_REQUEST; // ready for another
 }
 
 #[cfg(test)]
