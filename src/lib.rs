@@ -16,6 +16,7 @@ use chrono::{Local, TimeZone, Utc};
 use nix::errno::Errno;
 use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
+use nix::unistd::close;
 
 mod bindings;
 
@@ -353,17 +354,6 @@ impl<'a> std::fmt::Display for HtmlEscaped<'a> {
             }
         }
         Ok(())
-    }
-}
-
-/// Free a string allocated by Rust.
-#[no_mangle]
-pub extern "C" fn free_rust_cstring(s: *mut libc::c_char) {
-    // No operation is performed if the pointer is null (like `free`).
-    if !s.is_null() {
-        unsafe {
-            CString::from_raw(s);
-        }
     }
 }
 
@@ -1350,6 +1340,48 @@ pub extern "C" fn log_connection(server: *const Server, conn: *const Connection)
             libc::fflush(server.logfile as *mut libc::FILE);
         }
     }
+}
+
+/// Log a connection, then cleanly deallocate its internals.
+#[no_mangle]
+pub extern "C" fn free_connection(server: *mut Server, conn: *mut Connection) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+
+    log_connection(server, conn);
+
+    if conn.socket != -1 {
+        close(conn.socket).expect("close failed");
+    }
+    if !conn.request.is_null() {
+        unsafe { libc::free(conn.request as *mut libc::c_void) };
+    }
+    if !conn.method.is_null() {
+        unsafe { CString::from_raw(conn.method) };
+    }
+    if !conn.url.is_null() {
+        unsafe { CString::from_raw(conn.url) };
+    }
+    if !conn.referer.is_null() {
+        unsafe { CString::from_raw(conn.referer) };
+    }
+    if !conn.user_agent.is_null() {
+        unsafe { CString::from_raw(conn.user_agent) };
+    }
+    if !conn.authorization.is_null() {
+        unsafe { CString::from_raw(conn.authorization) };
+    }
+    if !conn.header.is_null() && conn.header_dont_free == 0 {
+        unsafe { CString::from_raw(conn.header) };
+    }
+    if !conn.reply.is_null() && conn.reply_dont_free == 0 {
+        unsafe { CString::from_raw(conn.reply) };
+    }
+    if conn.reply_fd != -1 {
+        close(conn.reply_fd).expect("close failed");
+    }
+    // If we ran out of sockets, try to resume accepting.
+    server.accepting = 1;
 }
 
 #[cfg(test)]

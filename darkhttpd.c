@@ -412,9 +412,6 @@ static unsigned int xasprintf(char **ret, const char *format, ...) {
     return len;
 }
 
-/* Free a string allocated by Rust. */
-extern void free_rust_cstring(char *s);
-
 /* Make the specified socket non-blocking. */
 static void nonblock_socket(const int sock) {
     int flags = fcntl(sock, F_GETFL);
@@ -958,22 +955,7 @@ static void accept_connection(void) {
 extern void log_connection(const struct server *srv, const struct connection *conn);
 
 /* Log a connection, then cleanly deallocate its internals. */
-static void free_connection(struct connection *conn) {
-    if (debug) printf("free_connection(%d)\n", conn->socket);
-    log_connection(&srv, conn);
-    if (conn->socket != -1) xclose(conn->socket);
-    if (conn->request != NULL) free(conn->request);
-    if (conn->method != NULL) free_rust_cstring(conn->method);
-    if (conn->url != NULL) free_rust_cstring(conn->url);
-    if (conn->referer != NULL) free_rust_cstring(conn->referer);
-    if (conn->user_agent != NULL) free_rust_cstring(conn->user_agent);
-    if (conn->authorization != NULL) free_rust_cstring(conn->authorization);
-    if (conn->header != NULL && !conn->header_dont_free) free_rust_cstring(conn->header);
-    if (conn->reply != NULL && !conn->reply_dont_free) free_rust_cstring(conn->reply);
-    if (conn->reply_fd != -1) xclose(conn->reply_fd);
-    /* If we ran out of sockets, try to resume accepting. */
-    srv.accepting = 1;
-}
+extern void free_connection(struct server *srv, struct connection *conn);
 
 /* Recycle a finished connection for HTTP/1.1 Keep-Alive. */
 static void recycle_connection(struct connection *conn) {
@@ -981,7 +963,7 @@ static void recycle_connection(struct connection *conn) {
     if (debug)
         printf("recycle_connection(%d)\n", socket_tmp);
     conn->socket = -1; /* so free_connection() doesn't close it */
-    free_connection(conn);
+    free_connection(&srv, conn);
     conn->socket = socket_tmp;
 
     /* don't reset conn->client */
@@ -1145,7 +1127,7 @@ static void httpd_poll(void) {
             /* clean out finished connection */
             if (conn->conn_close) {
                 LIST_REMOVE(conn, entries);
-                free_connection(conn);
+                free_connection(&srv, conn);
                 free(conn);
             } else {
                 recycle_connection(conn);
@@ -1373,7 +1355,7 @@ int main(int argc, char **argv) {
 
         LIST_FOREACH_SAFE(conn, &connlist, entries, next) {
             LIST_REMOVE(conn, entries);
-            free_connection(conn);
+            free_connection(&srv, conn);
             free(conn);
         }
     }
