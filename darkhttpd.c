@@ -954,109 +954,13 @@ static void accept_connection(void) {
     poll_recv_request(&srv, conn);
 }
 
-/* Should this character be logencoded?
- */
-static int needs_logencoding(const unsigned char c) {
-    return ((c <= 0x1F) || (c >= 0x7F) || (c == '"'));
-}
-
-/* Encode string for logging.
- */
-static void logencode(const char *src, char *dest) {
-    static const char hex[] = "0123456789ABCDEF";
-    int i, j;
-
-    for (i = j = 0; src[i] != '\0'; i++) {
-        if (needs_logencoding((unsigned char)src[i])) {
-            dest[j++] = '%';
-            dest[j++] = hex[(src[i] >> 4) & 0xF];
-            dest[j++] = hex[ src[i]       & 0xF];
-        }
-        else
-            dest[j++] = src[i];
-    }
-    dest[j] = '\0';
-}
-
-/* Format [when] as a CLF date format, stored in the specified buffer.  The same
- * buffer is returned for convenience.
- */
-#define CLF_DATE_LEN 29 /* strlen("[10/Oct/2000:13:55:36 -0700]")+1 */
-static char *clf_date(char *dest, const time_t when) {
-    time_t when_copy = when;
-    if (strftime(dest, CLF_DATE_LEN,
-                 "[%d/%b/%Y:%H:%M:%S %z]", localtime(&when_copy)) == 0)
-        errx(1, "strftime() failed [%s]", dest);
-    return dest;
-}
-
 /* Add a connection's details to the logfile. */
-static void log_connection(const struct connection *conn) {
-    char *safe_method, *safe_url, *safe_referer, *safe_user_agent,
-    dest[CLF_DATE_LEN];
-
-    if (srv.logfile == NULL)
-        return;
-    if (conn->http_code == 0)
-        return; /* invalid - died in request */
-    if (conn->method == NULL)
-        return; /* invalid - didn't parse - maybe too long */
-
-#define make_safe(x) do { \
-    if (conn->x) { \
-        safe_##x = xmalloc(strlen(conn->x)*3 + 1); \
-        logencode(conn->x, safe_##x); \
-    } else { \
-        safe_##x = NULL; \
-    } \
-} while(0)
-
-    make_safe(method);
-    make_safe(url);
-    make_safe(referer);
-    make_safe(user_agent);
-
-#define use_safe(x) safe_##x ? safe_##x : ""
-  if (srv.syslog_enabled) {
-    syslog(LOG_INFO, "%s - - %s \"%s %s HTTP/1.1\" %d %llu \"%s\" \"%s\"\n",
-        get_address_text(&conn->client),
-        clf_date(dest, srv.now),
-        use_safe(method),
-        use_safe(url),
-        conn->http_code,
-        llu(conn->total_sent),
-        use_safe(referer),
-        use_safe(user_agent)
-        );
-  } else {
-    fprintf(srv.logfile, "%s - - %s \"%s %s HTTP/1.1\" %d %llu \"%s\" \"%s\"\n",
-        get_address_text(&conn->client),
-        clf_date(dest, srv.now),
-        use_safe(method),
-        use_safe(url),
-        conn->http_code,
-        llu(conn->total_sent),
-        use_safe(referer),
-        use_safe(user_agent)
-        );
-    fflush(srv.logfile);
-  }    
-#define free_safe(x) if (safe_##x) free(safe_##x)
-
-    free_safe(method);
-    free_safe(url);
-    free_safe(referer);
-    free_safe(user_agent);
-
-#undef make_safe
-#undef use_safe
-#undef free_safe
-}
+extern void log_connection(const struct server *srv, const struct connection *conn);
 
 /* Log a connection, then cleanly deallocate its internals. */
 static void free_connection(struct connection *conn) {
     if (debug) printf("free_connection(%d)\n", conn->socket);
-    log_connection(conn);
+    log_connection(&srv, conn);
     if (conn->socket != -1) xclose(conn->socket);
     if (conn->request != NULL) free(conn->request);
     if (conn->method != NULL) free_rust_cstring(conn->method);
