@@ -1426,6 +1426,55 @@ pub extern "C" fn recycle_connection(server: *mut Server, conn: *mut Connection)
     conn.state = bindings::connection_RECV_REQUEST; // ready for another
 }
 
+/// Allocate and initialize an empty connection.
+#[no_mangle]
+pub extern "C" fn new_connection(server: *const Server) -> *mut Connection {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    let conn = Connection {
+        entries: bindings::connection__bindgen_ty_1 {
+            le_next: null_mut(),
+            le_prev: null_mut(),
+        },
+        socket: -1,
+        client: bindings::in6_addr {
+            __in6_u: bindings::in6_addr__bindgen_ty_1 {
+                __u6_addr8: [0; 16],
+            },
+        },
+        last_active: server.now,
+        // Make it harmless so it gets garbage-collected if it should, for some reason, fail to be
+        // correctly filled out.
+        state: bindings::connection_DONE,
+        request: null_mut(),
+        request_length: 0,
+        method: null_mut(),
+        url: null_mut(),
+        referer: null_mut(),
+        user_agent: null_mut(),
+        authorization: null_mut(),
+        range_begin: 0,
+        range_end: 0,
+        range_begin_given: 0,
+        range_end_given: 0,
+        header: null_mut(),
+        header_length: 0,
+        header_sent: 0,
+        header_dont_free: 0, // TODO: remove unused?
+        header_only: 0,
+        http_code: 0,
+        conn_close: 1,
+        reply_type: bindings::connection_RECV_REQUEST,
+        reply: null_mut(),
+        reply_dont_free: 0, // TODO: remove unused?
+        reply_fd: -1,
+        reply_start: 0,
+        reply_length: 0,
+        reply_sent: 0,
+        total_sent: 0,
+    };
+    Box::into_raw(Box::new(conn))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

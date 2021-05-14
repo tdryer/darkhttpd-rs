@@ -853,45 +853,7 @@ static void parse_commandline(const int argc, char *argv[]) {
 }
 
 /* Allocate and initialize an empty connection. */
-static struct connection *new_connection(void) {
-    struct connection *conn = xmalloc(sizeof(struct connection));
-
-    conn->socket = -1;
-    memset(&conn->client, 0, sizeof(conn->client));
-    conn->last_active = srv.now;
-    conn->request = NULL;
-    conn->request_length = 0;
-    conn->method = NULL;
-    conn->url = NULL;
-    conn->referer = NULL;
-    conn->user_agent = NULL;
-    conn->authorization = NULL;
-    conn->range_begin = 0;
-    conn->range_end = 0;
-    conn->range_begin_given = 0;
-    conn->range_end_given = 0;
-    conn->header = NULL;
-    conn->header_length = 0;
-    conn->header_sent = 0;
-    conn->header_dont_free = 0;
-    conn->header_only = 0;
-    conn->http_code = 0;
-    conn->conn_close = 1;
-    conn->reply = NULL;
-    conn->reply_dont_free = 0;
-    conn->reply_fd = -1;
-    conn->reply_start = 0;
-    conn->reply_length = 0;
-    conn->reply_sent = 0;
-    conn->total_sent = 0;
-
-    /* Make it harmless so it gets garbage-collected if it should, for some
-     * reason, fail to be correctly filled out.
-     */
-    conn->state = DONE;
-
-    return conn;
-}
+extern struct connection *new_connection(const struct server *srv);
 
 /* Accept a connection from sockin and add it to the connection queue. */
 static void accept_connection(void) {
@@ -924,7 +886,7 @@ static void accept_connection(void) {
     }
 
     /* Allocate and initialize struct connection. */
-    conn = new_connection();
+    conn = new_connection(&srv);
     conn->socket = fd;
     nonblock_socket(conn->socket);
     conn->state = RECV_REQUEST;
