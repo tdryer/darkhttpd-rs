@@ -1473,6 +1473,21 @@ pub extern "C" fn new_connection(server: *const Server) -> *mut Connection {
     Box::into_raw(Box::new(conn))
 }
 
+/// If a connection has been idle for more than timeout_secs, it will be marked as DONE and killed
+/// off in httpd_poll().
+#[no_mangle]
+pub extern "C" fn poll_check_timeout(server: *const Server, conn: *mut Connection) {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+
+    if server.timeout_secs > 0 {
+        if server.now - conn.last_active >= server.timeout_secs as i64 {
+            conn.conn_close = 1;
+            conn.state = bindings::connection_DONE;
+        }
+    }
+}
+
 /// Make the specified socket non-blocking.
 #[no_mangle]
 pub extern "C" fn nonblock_socket(sock: libc::c_int) {

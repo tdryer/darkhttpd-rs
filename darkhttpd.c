@@ -917,17 +917,7 @@ extern void recycle_connection(struct server *srv, struct connection *conn);
 /* If a connection has been idle for more than timeout_secs, it will be
  * marked as DONE and killed off in httpd_poll().
  */
-static void poll_check_timeout(struct connection *conn) {
-    if (srv.timeout_secs > 0) {
-        if (srv.now - conn->last_active >= srv.timeout_secs) {
-            if (debug)
-                printf("poll_check_timeout(%d) closing connection\n",
-                       conn->socket);
-            conn->conn_close = 1;
-            conn->state = DONE;
-        }
-    }
-}
+extern void poll_check_timeout(const struct server *srv, struct connection *conn);
 
 /* Process a request: build the header and reply, advance state. */
 extern void process_request(const struct server *srv, struct connection *conn);
@@ -1021,7 +1011,7 @@ static void httpd_poll(void) {
         accept_connection();
 
     LIST_FOREACH_SAFE(conn, &connlist, entries, next) {
-        poll_check_timeout(conn);
+        poll_check_timeout(&srv, conn);
         switch (conn->state) {
         case RECV_REQUEST:
             if (FD_ISSET(conn->socket, &recv_set)) poll_recv_request(&srv, conn);
