@@ -7,7 +7,7 @@ use std::io::BufRead;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::ptr::null_mut;
 use std::slice;
 
@@ -1443,7 +1443,7 @@ pub extern "C" fn recycle_connection(server: *mut Server, conn: *mut Connection)
 
 /// Allocate and initialize an empty connection.
 #[no_mangle]
-pub extern "C" fn new_connection(server: *mut Server) -> *mut Connection {
+fn new_connection(server: *mut Server) -> *mut Connection {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
     let connections = unsafe {
         (server.connections as *mut Vec<Connection>)
@@ -1571,13 +1571,63 @@ pub extern "C" fn poll_check_timeout(server: *const Server, conn: *mut Connectio
 }
 
 /// Make the specified socket non-blocking.
-#[no_mangle]
-pub extern "C" fn nonblock_socket(sock: libc::c_int) {
+fn nonblock_socket(sock: RawFd) {
     let stream = unsafe { TcpStream::from_raw_fd(sock) };
     stream
         .set_nonblocking(true)
         .expect("set_nonblocking failed");
     stream.into_raw_fd();
+}
+
+/// Accept a connection from sockin and add it to the connection queue.
+#[no_mangle]
+pub extern "C" fn accept_connection(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    let fd = match socket::accept(server.sockin) {
+        Ok(fd) => fd,
+        Err(e) => {
+            // Failed to accept, but try to keep serving existing connections.
+            if e.as_errno() == Some(Errno::EMFILE) || e.as_errno() == Some(Errno::ENFILE) {
+                server.accepting = 0;
+            }
+            eprintln!("warning: accept() failed: {}", e);
+            return;
+        }
+    };
+
+    // `socket::accept` doesn't expose the peer address, so request it separately.
+    let addr = match socket::getpeername(fd) {
+        Ok(socket::SockAddr::Inet(addr)) => addr,
+        Ok(_) => panic!("getpeername returned unexpected address type"),
+        Err(e) => {
+            eprintln!("warning: getpeername() failed: {}", e);
+            return;
+        }
+    };
+
+    // Allocate and initialize struct connection.
+    // TODO: Clean up new_connection
+    let conn = new_connection(server);
+    let conn = unsafe { conn.as_mut().expect("received null connection") };
+    conn.socket = fd;
+    nonblock_socket(conn.socket);
+    conn.state = bindings::connection_RECV_REQUEST;
+
+    // Set connection client address.
+    match addr {
+        socket::InetAddr::V6(addr) => {
+            let conn_client_addr = unsafe { &mut conn.client.__in6_u.__u6_addr8 };
+            conn_client_addr.copy_from_slice(&addr.sin6_addr.s6_addr);
+        }
+        socket::InetAddr::V4(addr) => {
+            let conn_client_addr = unsafe { &mut conn.client.__in6_u.__u6_addr32 };
+            conn_client_addr[0] = addr.sin_addr.s_addr;
+        }
+    }
+
+    // Try to read straight away rather than going through another iteration of the select() loop.
+    poll_recv_request(server, conn);
 }
 
 #[cfg(test)]

@@ -364,9 +364,6 @@ static unsigned int xasprintf(char **ret, const char *format, ...) {
     return len;
 }
 
-/* Make the specified socket non-blocking. */
-extern void nonblock_socket(const int sock);
-
 /* Split string out of src with range [left:right-1] */
 extern char *split_string(const char *src, const size_t left, const size_t right);
 
@@ -796,9 +793,6 @@ static void parse_commandline(const int argc, char *argv[]) {
     }
 }
 
-/* Allocate and initialize an empty connection. */
-extern struct connection *new_connection(struct server *srv);
-
 extern int connection_exists(const struct server *srv, int index);
 
 extern struct connection *get_connection(struct server *srv, int index);
@@ -806,61 +800,7 @@ extern struct connection *get_connection(struct server *srv, int index);
 extern void remove_connection(struct server *srv, int index);
 
 /* Accept a connection from sockin and add it to the connection queue. */
-static void accept_connection(void) {
-    struct sockaddr_in addrin;
-#ifdef HAVE_INET6
-    struct sockaddr_in6 addrin6;
-#endif
-    socklen_t sin_size;
-    struct connection *conn;
-    int fd;
-
-#ifdef HAVE_INET6
-    if (srv.inet6) {
-        sin_size = sizeof(addrin6);
-        memset(&addrin6, 0, sin_size);
-        fd = accept(srv.sockin, (struct sockaddr *)&addrin6, &sin_size);
-    } else
-#endif
-    {
-        sin_size = sizeof(addrin);
-        memset(&addrin, 0, sin_size);
-        fd = accept(srv.sockin, (struct sockaddr *)&addrin, &sin_size);
-    }
-
-    if (fd == -1) {
-        /* Failed to accept, but try to keep serving existing connections. */
-        if (errno == EMFILE || errno == ENFILE) srv.accepting = 0;
-        warn("accept()");
-        return;
-    }
-
-    /* Allocate and initialize struct connection. */
-    conn = new_connection(&srv);
-    conn->socket = fd;
-    nonblock_socket(conn->socket);
-    conn->state = RECV_REQUEST;
-
-#ifdef HAVE_INET6
-    if (srv.inet6) {
-        conn->client = addrin6.sin6_addr;
-    } else
-#endif
-    {
-        *(in_addr_t *)&conn->client = addrin.sin_addr.s_addr;
-    }
-
-    if (debug)
-        printf("accepted connection from %s:%u (fd %d)\n",
-               inet_ntoa(addrin.sin_addr),
-               ntohs(addrin.sin_port),
-               conn->socket);
-
-    /* Try to read straight away rather than going through another iteration
-     * of the select() loop.
-     */
-    poll_recv_request(&srv, conn);
-}
+extern void accept_connection(struct server *srv);
 
 /* Add a connection's details to the logfile. */
 extern void log_connection(const struct server *srv, const struct connection *conn);
@@ -969,7 +909,7 @@ static void httpd_poll(void) {
 
     /* poll connections that select() says need attention */
     if (FD_ISSET(srv.sockin, &recv_set))
-        accept_connection();
+        accept_connection(&srv);
 
     i = 0;
     while (connection_exists(&srv, i)) {
