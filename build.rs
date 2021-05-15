@@ -15,7 +15,9 @@ fn main() {
         // included header files changed.
         .parse_callbacks(Box::new(bindgen::CargoCallbacks))
         .allowlist_type("connection")
+        .no_copy("connection")
         .allowlist_type("server")
+        .no_copy("server")
         .generate()
         .expect("Unable to generate bindings");
 

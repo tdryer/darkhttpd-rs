@@ -1442,15 +1442,8 @@ pub extern "C" fn recycle_connection(server: *mut Server, conn: *mut Connection)
 }
 
 /// Allocate and initialize an empty connection.
-#[no_mangle]
-fn new_connection(server: *mut Server) -> *mut Connection {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let connections = unsafe {
-        (server.connections as *mut Vec<Connection>)
-            .as_mut()
-            .expect("connections pointer is null")
-    };
-    connections.push(Connection {
+fn new_connection(server: &Server) -> Connection {
+    Connection {
         socket: -1,
         client: bindings::in6_addr {
             __in6_u: bindings::in6_addr__bindgen_ty_1 {
@@ -1487,9 +1480,7 @@ fn new_connection(server: *mut Server) -> *mut Connection {
         reply_length: 0,
         reply_sent: 0,
         total_sent: 0,
-    });
-    let num_connections = connections.len();
-    &mut connections[num_connections - 1]
+    }
 }
 
 /// Initialize connections list.
@@ -1607,9 +1598,7 @@ pub extern "C" fn accept_connection(server: *mut Server) {
     };
 
     // Allocate and initialize struct connection.
-    // TODO: Clean up new_connection
-    let conn = new_connection(server);
-    let conn = unsafe { conn.as_mut().expect("received null connection") };
+    let mut conn = new_connection(server);
     conn.socket = fd;
     nonblock_socket(conn.socket);
     conn.state = bindings::connection_RECV_REQUEST;
@@ -1626,8 +1615,16 @@ pub extern "C" fn accept_connection(server: *mut Server) {
         }
     }
 
+    let connections = unsafe {
+        (server.connections as *mut Vec<Connection>)
+            .as_mut()
+            .expect("connections pointer is null")
+    };
+    connections.push(conn);
+    let num_connections = connections.len();
+
     // Try to read straight away rather than going through another iteration of the select() loop.
-    poll_recv_request(server, conn);
+    poll_recv_request(server, &mut connections[num_connections - 1]);
 }
 
 #[cfg(test)]
