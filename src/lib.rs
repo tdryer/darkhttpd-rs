@@ -126,7 +126,15 @@ pub extern "C" fn parse_default_extension_map(server: *mut Server) {
     let server = unsafe { server.as_mut().unwrap() };
     let mime_map = MimeMap::parse_default_extension_map();
     assert!(server.mime_map.is_null());
+    // freed by `free_mime_map`
     server.mime_map = Box::into_raw(Box::new(mime_map)) as *mut libc::c_void;
+}
+
+#[no_mangle]
+pub extern "C" fn free_mime_map(server: *mut Server) {
+    let server = unsafe { server.as_mut().unwrap() };
+    assert!(!server.mime_map.is_null());
+    unsafe { Box::from_raw(server.mime_map as *mut MimeMap) };
 }
 
 #[no_mangle]
@@ -144,7 +152,16 @@ pub extern "C" fn set_keep_alive_field(server: *mut Server) {
     let server = unsafe { server.as_mut().unwrap() };
     assert!(server.keep_alive_field.is_null());
     let keep_alive = format!("Keep-Alive: timeout={}\r\n", server.timeout_secs);
+    // freed by `free_keep_alive_field`
     server.keep_alive_field = Box::into_raw(Box::new(keep_alive)) as *mut libc::c_void;
+}
+
+/// Frees the keep alive field.
+#[no_mangle]
+pub extern "C" fn free_keep_alive_field(server: *mut Server) {
+    let server = unsafe { server.as_mut().unwrap() };
+    assert!(!server.keep_alive_field.is_null());
+    unsafe { Box::from_raw(server.keep_alive_field as *mut String) };
 }
 
 /// Returns Connection or Keep-Alive header, depending on conn_close.
@@ -1481,6 +1498,7 @@ pub extern "C" fn init_connections_list(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
     assert!(server.connections.is_null());
     let connections: Vec<Connection> = Vec::new();
+    // freed by `free_connections_list`
     server.connections = Box::into_raw(Box::new(connections)) as *mut libc::c_void;
 }
 

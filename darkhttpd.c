@@ -1158,6 +1158,10 @@ extern void init_connections_list(struct server *srv);
 
 extern void free_connections_list(struct server *srv);
 
+extern void free_mime_map(struct server *srv);
+
+extern void free_keep_alive_field(struct server *srv);
+
 /* Execution starts here. */
 int main(int argc, char **argv) {
     printf("%s, %s.\n", srv.pkgname, srv.copyright);
@@ -1246,6 +1250,8 @@ int main(int argc, char **argv) {
         free(srv.server_hdr);
         free(srv.auth_key);
         free_connections_list(&srv);
+        free_mime_map(&srv);
+        free_keep_alive_field(&srv);
     }
 
     /* usage stats */
