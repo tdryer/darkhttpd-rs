@@ -167,56 +167,7 @@ static void warn(const char *format, ...) {
 }
 #endif
 
-/* [->] LIST_* macros taken from FreeBSD's src/sys/sys/queue.h,v 1.56
- * Copyright (c) 1991, 1993
- *      The Regents of the University of California.  All rights reserved.
- *
- * Under a BSD license.
- */
-#define LIST_HEAD(name, type)                                           \
-struct name {                                                           \
-        struct type *lh_first;  /* first element */                     \
-}
-
-#define LIST_HEAD_INITIALIZER(head)                                     \
-        { NULL }
-
-#define LIST_ENTRY(type)                                                \
-struct {                                                                \
-        struct type *le_next;   /* next element */                      \
-        struct type **le_prev;  /* address of previous next element */  \
-}
-
-#define LIST_FIRST(head)        ((head)->lh_first)
-
-#define LIST_FOREACH_SAFE(var, head, field, tvar)                       \
-    for ((var) = LIST_FIRST((head));                                    \
-        (var) && ((tvar) = LIST_NEXT((var), field), 1);                 \
-        (var) = (tvar))
-
-#define LIST_INSERT_HEAD(head, elm, field) do {                         \
-        if ((LIST_NEXT((elm), field) = LIST_FIRST((head))) != NULL)     \
-                LIST_FIRST((head))->field.le_prev = &LIST_NEXT((elm), field);\
-        LIST_FIRST((head)) = (elm);                                     \
-        (elm)->field.le_prev = &LIST_FIRST((head));                     \
-} while (0)
-
-#define LIST_NEXT(elm, field)   ((elm)->field.le_next)
-
-#define LIST_REMOVE(elm, field) do {                                    \
-        if (LIST_NEXT((elm), field) != NULL)                            \
-                LIST_NEXT((elm), field)->field.le_prev =                \
-                    (elm)->field.le_prev;                               \
-        *(elm)->field.le_prev = LIST_NEXT((elm), field);                \
-} while (0)
-/* [<-] */
-
-static LIST_HEAD(conn_list_head, connection) connlist =
-    LIST_HEAD_INITIALIZER(conn_list_head);
-
 struct connection {
-    LIST_ENTRY(connection) entries;
-
     int socket;
 #ifdef HAVE_INET6
     struct in6_addr client;
@@ -262,6 +213,7 @@ static const char octet_stream[] = "application/octet-stream";
 struct server {
     const char *pkgname;
     const char *copyright;
+    void *connections;          /* used by Rust */
     struct forward_mapping *forward_map;
     size_t forward_map_size;
     const char *forward_all_url;
@@ -845,7 +797,13 @@ static void parse_commandline(const int argc, char *argv[]) {
 }
 
 /* Allocate and initialize an empty connection. */
-extern struct connection *new_connection(const struct server *srv);
+extern struct connection *new_connection(struct server *srv);
+
+extern int connection_exists(const struct server *srv, int index);
+
+extern struct connection *get_connection(struct server *srv, int index);
+
+extern void remove_connection(struct server *srv, int index);
 
 /* Accept a connection from sockin and add it to the connection queue. */
 static void accept_connection(void) {
@@ -891,7 +849,6 @@ static void accept_connection(void) {
     {
         *(in_addr_t *)&conn->client = addrin.sin_addr.s_addr;
     }
-    LIST_INSERT_HEAD(&connlist, conn, entries);
 
     if (debug)
         printf("accepted connection from %s:%u (fd %d)\n",
@@ -928,7 +885,6 @@ extern void process_request(const struct server *srv, struct connection *conn);
 static void httpd_poll(void) {
     fd_set recv_set, send_set;
     int max_fd, select_ret;
-    struct connection *conn, *next;
     int bother_with_timeout = 0;
     struct timeval timeout, t0, t1;
 
@@ -945,7 +901,10 @@ static void httpd_poll(void) {
                                 while (0)
     if (srv.accepting) MAX_FD_SET(srv.sockin, &recv_set);
 
-    LIST_FOREACH_SAFE(conn, &connlist, entries, next) {
+    int i = 0;
+    while (connection_exists(&srv, i)) {
+        struct connection *conn = get_connection(&srv, i);
+
         switch (conn->state) {
         case DONE:
             /* do nothing */
@@ -962,6 +921,8 @@ static void httpd_poll(void) {
             bother_with_timeout = 1;
             break;
         }
+
+        i++;
     }
 #undef MAX_FD_SET
 
@@ -1010,7 +971,10 @@ static void httpd_poll(void) {
     if (FD_ISSET(srv.sockin, &recv_set))
         accept_connection();
 
-    LIST_FOREACH_SAFE(conn, &connlist, entries, next) {
+    i = 0;
+    while (connection_exists(&srv, i)) {
+        struct connection *conn = get_connection(&srv, i);
+
         poll_check_timeout(&srv, conn);
         switch (conn->state) {
         case RECV_REQUEST:
@@ -1034,16 +998,18 @@ static void httpd_poll(void) {
         if (conn->state == DONE) {
             /* clean out finished connection */
             if (conn->conn_close) {
-                LIST_REMOVE(conn, entries);
-                free_connection(&srv, conn);
-                free(conn);
+                free_connection(&srv, conn); // logs connection and drops fields
+                remove_connection(&srv, i);  // drops connection
             } else {
                 recycle_connection(&srv, conn);
                 /* and go right back to recv_request without going through
                  * select() again.
                  */
                 poll_recv_request(&srv, conn);
+                i++;
             }
+        } else {
+            i++;
         }
     }
 }
@@ -1187,9 +1153,15 @@ static void stop_running(int sig unused) {
 /* Set the keep alive field. */
 extern void set_keep_alive_field(struct server *srv);
 
+/* Initialize connections list. */
+extern void init_connections_list(struct server *srv);
+
+extern void free_connections_list(struct server *srv);
+
 /* Execution starts here. */
 int main(int argc, char **argv) {
     printf("%s, %s.\n", srv.pkgname, srv.copyright);
+    init_connections_list(&srv);
     parse_default_extension_map(&srv);
     parse_commandline(argc, argv);
     set_keep_alive_field(&srv);
@@ -1259,12 +1231,10 @@ int main(int argc, char **argv) {
 
     /* close and free connections */
     {
-        struct connection *conn, *next;
-
-        LIST_FOREACH_SAFE(conn, &connlist, entries, next) {
-            LIST_REMOVE(conn, entries);
-            free_connection(&srv, conn);
-            free(conn);
+        while (connection_exists(&srv, 0)) {
+            struct connection *conn = get_connection(&srv, 0);
+            free_connection(&srv, conn);  // logs connection and drops fields
+            remove_connection(&srv, 0); // drops connection
         }
     }
 
@@ -1275,6 +1245,7 @@ int main(int argc, char **argv) {
         free(srv.wwwroot);
         free(srv.server_hdr);
         free(srv.auth_key);
+        free_connections_list(&srv);
     }
 
     /* usage stats */

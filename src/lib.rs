@@ -1426,13 +1426,14 @@ pub extern "C" fn recycle_connection(server: *mut Server, conn: *mut Connection)
 
 /// Allocate and initialize an empty connection.
 #[no_mangle]
-pub extern "C" fn new_connection(server: *const Server) -> *mut Connection {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = Connection {
-        entries: bindings::connection__bindgen_ty_1 {
-            le_next: null_mut(),
-            le_prev: null_mut(),
-        },
+pub extern "C" fn new_connection(server: *mut Server) -> *mut Connection {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let connections = unsafe {
+        (server.connections as *mut Vec<Connection>)
+            .as_mut()
+            .expect("connections pointer is null")
+    };
+    connections.push(Connection {
         socket: -1,
         client: bindings::in6_addr {
             __in6_u: bindings::in6_addr__bindgen_ty_1 {
@@ -1469,8 +1470,71 @@ pub extern "C" fn new_connection(server: *const Server) -> *mut Connection {
         reply_length: 0,
         reply_sent: 0,
         total_sent: 0,
+    });
+    let num_connections = connections.len();
+    &mut connections[num_connections - 1]
+}
+
+/// Initialize connections list.
+#[no_mangle]
+pub extern "C" fn init_connections_list(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    assert!(server.connections.is_null());
+    let connections: Vec<Connection> = Vec::new();
+    server.connections = Box::into_raw(Box::new(connections)) as *mut libc::c_void;
+}
+
+/// Free connections list.
+#[no_mangle]
+pub extern "C" fn free_connections_list(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    assert!(!server.connections.is_null());
+    let connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
+    assert!(connections.is_empty(), "connections is not empty");
+    server.connections = null_mut();
+}
+
+/// Return 1 if connection exists at index.
+#[no_mangle]
+pub extern "C" fn connection_exists(server: *const Server, index: libc::c_int) -> libc::c_int {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    let connections = unsafe {
+        (server.connections as *const Vec<Connection>)
+            .as_ref()
+            .expect("connections pointer is null")
     };
-    Box::into_raw(Box::new(conn))
+    assert!(index >= 0, "invalid connection index");
+    (index < (connections.len() as libc::c_int)) as libc::c_int
+}
+
+/// Get connection by index.
+#[no_mangle]
+pub extern "C" fn get_connection(server: *mut Server, index: libc::c_int) -> *mut Connection {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let connections = unsafe {
+        (server.connections as *mut Vec<Connection>)
+            .as_mut()
+            .expect("connections pointer is null")
+    };
+    connections
+        .get_mut(index as usize)
+        .expect("invalid connection index")
+}
+
+/// Remove connection by index.
+#[no_mangle]
+pub extern "C" fn remove_connection(server: *mut Server, index: libc::c_int) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let connections = unsafe {
+        (server.connections as *mut Vec<Connection>)
+            .as_mut()
+            .expect("connections pointer is null")
+    };
+    assert!(
+        (index as usize) < connections.len(),
+        "invalid connection index"
+    );
+    connections.remove(index as usize);
 }
 
 /// If a connection has been idle for more than timeout_secs, it will be marked as DONE and killed
