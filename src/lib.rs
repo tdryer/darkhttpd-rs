@@ -1296,17 +1296,14 @@ fn log_connection(server: &Server, conn: &Connection) {
 fn free_connection(server: &mut Server, conn: &mut Connection) {
     log_connection(server, conn);
 
-    // If we ran out of sockets, try to resume accepting.
-    server.accepting = 1;
+    server.accepting = 1; // Try to resume accepting if we ran out of sockets.
 }
 
 /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
 fn recycle_connection(server: &mut Server, conn: &mut Connection) {
-    let socket_tmp = conn.socket.take(); // so free_connection() doesn't close it
     free_connection(server, conn);
-    conn.socket = socket_tmp;
 
-    // don't reset conn->client
+    // don't reset conn.socket or conn.client
     conn.request = Vec::new();
     conn.method = None;
     conn.url = None;
