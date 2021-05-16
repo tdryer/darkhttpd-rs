@@ -42,9 +42,9 @@ struct Connection {
     request_length: bindings::size_t,
     method: *mut ::std::os::raw::c_char,
     url: *mut ::std::os::raw::c_char,
-    referer: *mut ::std::os::raw::c_char,
-    user_agent: *mut ::std::os::raw::c_char,
-    authorization: *mut ::std::os::raw::c_char,
+    referer: Option<String>,
+    user_agent: Option<String>,
+    authorization: Option<String>,
     range_begin: libc::off_t,
     range_end: libc::off_t,
     range_begin_given: libc::off_t,
@@ -1039,15 +1039,9 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
     }
 
     // parse important fields
-    if let Some(referer) = parse_field(conn, "Referer: ") {
-        conn.referer = CString::new(referer).unwrap().into_raw();
-    }
-    if let Some(user_agent) = parse_field(conn, "User-Agent: ") {
-        conn.user_agent = CString::new(user_agent).unwrap().into_raw();
-    }
-    if let Some(authorization) = parse_field(conn, "Authorization: ") {
-        conn.authorization = CString::new(authorization).unwrap().into_raw();
-    }
+    conn.referer = parse_field(conn, "Referer: ");
+    conn.user_agent = parse_field(conn, "User-Agent: ");
+    conn.authorization = parse_field(conn, "Authorization: ");
     parse_range_field(conn);
 
     true
@@ -1064,22 +1058,15 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     } else {
         Some(unsafe { CStr::from_ptr(server.auth_key) }.to_str().unwrap())
     };
-    let authorization = if conn.authorization.is_null() {
-        None
-    } else {
-        Some(
-            unsafe { CStr::from_ptr(conn.authorization) }
-                .to_str()
-                .unwrap(),
-        )
-    };
     assert!(!conn.method.is_null());
     let method = unsafe { CStr::from_ptr(conn.method) }.to_str().unwrap();
 
     if !result {
         let reason = "You sent a request that the server couldn't understand.";
         default_reply(server, conn, 400, "Bad Request", reason);
-    } else if auth_key.is_some() && (authorization.is_none() || authorization != auth_key) {
+    } else if auth_key.is_some()
+        && (conn.authorization.is_none() || conn.authorization.as_deref() != auth_key)
+    {
         let reason = "Access denied due to invalid credentials.";
         default_reply(server, conn, 401, "Unauthorized", reason);
     } else if method == "GET" {
@@ -1324,8 +1311,6 @@ fn log_connection(server: &Server, conn: &Connection) {
 
     let method = str_from_ptr(conn.method).unwrap();
     let url = str_from_ptr(conn.url).unwrap();
-    let referer = str_from_ptr(conn.referer).unwrap_or("");
-    let user_agent = str_from_ptr(conn.user_agent).unwrap_or("");
 
     let message = CString::new(format!(
         "{} - - {} \"{} {} HTTP/1.1\" {} {} \"{}\" \"{}\"\n",
@@ -1335,8 +1320,8 @@ fn log_connection(server: &Server, conn: &Connection) {
         LogEncoded(url),
         conn.http_code,
         conn.total_sent,
-        LogEncoded(referer),
-        LogEncoded(user_agent)
+        LogEncoded(conn.referer.as_deref().unwrap_or("")),
+        LogEncoded(conn.user_agent.as_deref().unwrap_or(""))
     ))
     .unwrap();
 
@@ -1371,15 +1356,6 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     if !conn.url.is_null() {
         unsafe { CString::from_raw(conn.url) };
     }
-    if !conn.referer.is_null() {
-        unsafe { CString::from_raw(conn.referer) };
-    }
-    if !conn.user_agent.is_null() {
-        unsafe { CString::from_raw(conn.user_agent) };
-    }
-    if !conn.authorization.is_null() {
-        unsafe { CString::from_raw(conn.authorization) };
-    }
     if !conn.header.is_null() {
         unsafe { CString::from_raw(conn.header) };
     }
@@ -1405,9 +1381,9 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.request_length = 0;
     conn.method = null_mut();
     conn.url = null_mut();
-    conn.referer = null_mut();
-    conn.user_agent = null_mut();
-    conn.authorization = null_mut();
+    conn.referer = None;
+    conn.user_agent = None;
+    conn.authorization = None;
     conn.range_begin = 0;
     conn.range_end = 0;
     conn.range_begin_given = 0;
@@ -1439,9 +1415,9 @@ fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection 
         request_length: 0,
         method: null_mut(),
         url: null_mut(),
-        referer: null_mut(),
-        user_agent: null_mut(),
-        authorization: null_mut(),
+        referer: None,
+        user_agent: None,
+        authorization: None,
         range_begin: 0,
         range_end: 0,
         range_begin_given: 0,
