@@ -292,11 +292,6 @@ static struct server srv = {
 static uid_t drop_uid = INVALID_UID;
 static gid_t drop_gid = INVALID_GID;
 
-/* Prototypes. */
-extern void poll_recv_request(struct server *srv, struct connection *conn);
-extern void poll_send_header(struct server *srv, struct connection *conn);
-extern void poll_send_reply(struct server *srv, struct connection *conn);
-
 /* close() that dies on error.  */
 static void xclose(const int fd) {
     if (close(fd) == -1)
@@ -356,15 +351,6 @@ static unsigned int xasprintf(char **ret, const char *format, ...) {
     va_end(va);
     return len;
 }
-
-/* Split string out of src with range [left:right-1] */
-extern char *split_string(const char *src, const size_t left, const size_t right);
-
-/* Resolve /./ and /../ in a URL, in-place.
- * Returns NULL if the URL is invalid/unsafe, or the original buffer if
- * successful.
- */
-extern char *make_safe_url(char *const url);
 
 static void add_forward_mapping(const char * const host,
                                 const char * const target_url) {
@@ -792,25 +778,8 @@ extern struct connection *get_connection(struct server *srv, int index);
 
 extern void remove_connection(struct server *srv, int index);
 
-/* Accept a connection from sockin and add it to the connection queue. */
-extern void accept_connection(struct server *srv);
-
-/* Add a connection's details to the logfile. */
-extern void log_connection(const struct server *srv, const struct connection *conn);
-
 /* Log a connection, then cleanly deallocate its internals. */
 extern void free_connection(struct server *srv, struct connection *conn);
-
-/* Recycle a finished connection for HTTP/1.1 Keep-Alive. */
-extern void recycle_connection(struct server *srv, struct connection *conn);
-
-/* If a connection has been idle for more than timeout_secs, it will be
- * marked as DONE and killed off in httpd_poll().
- */
-extern void poll_check_timeout(const struct server *srv, struct connection *conn);
-
-/* Process a request: build the header and reply, advance state. */
-extern void process_request(const struct server *srv, struct connection *conn);
 
 /* Main loop of the httpd - a select() and then delegation to accept
  * connections, handle receiving of requests, and sending of replies.

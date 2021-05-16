@@ -223,25 +223,6 @@ pub unsafe extern "C" fn xmalloc(size: libc::size_t) -> *mut libc::c_void {
     ptr
 }
 
-/// Split string out of src with range [left:right-1].
-#[no_mangle]
-pub unsafe extern "C" fn split_string(
-    src: *const libc::c_char,
-    left: libc::size_t,
-    right: libc::size_t,
-) -> *mut libc::c_char {
-    assert!(left <= right);
-    assert!(left < libc::strlen(src)); // [left means must be smaller
-    assert!(right <= libc::strlen(src)); // right) means can be equal or smaller
-
-    let src = slice::from_raw_parts(src, right);
-    let dest_len = right - left + 1;
-    let dest = slice::from_raw_parts_mut(xmalloc(dest_len) as *mut libc::c_char, dest_len);
-    dest[..right - left].copy_from_slice(&src[left..]);
-    dest[dest_len - 1] = 0;
-    dest.as_mut_ptr()
-}
-
 /// Resolve //, /./, and /../ in a URL.
 ///
 /// Returns None if the URL is invalid/unsafe.
@@ -1027,10 +1008,7 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
 }
 
 /// Process a request: build the header and reply, advance state.
-#[no_mangle]
-pub extern "C" fn process_request(server: *mut Server, conn: *mut Connection) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
+fn process_request(server: &mut Server, conn: &mut Connection) {
     server.num_requests += 1;
 
     let result = parse_request(server, conn);
@@ -1092,11 +1070,7 @@ fn send_from_file(
 }
 
 /// Sending reply.
-#[no_mangle]
-pub extern "C" fn poll_send_reply(server: *mut Server, conn: *mut Connection) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-
+fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     assert!(conn.state == bindings::connection_SEND_REPLY);
     assert!(conn.header_only == 0);
     assert!(conn.reply_length >= conn.reply_sent);
@@ -1150,11 +1124,7 @@ pub extern "C" fn poll_send_reply(server: *mut Server, conn: *mut Connection) {
 }
 
 /// Sending header. Assumes conn->header is not NULL.
-#[no_mangle]
-pub extern "C" fn poll_send_header(server: *mut Server, conn: *mut Connection) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-
+fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     assert_eq!(conn.state, bindings::connection_SEND_HEADER);
 
     assert!(!conn.header.is_null());
@@ -1204,11 +1174,7 @@ pub extern "C" fn poll_send_header(server: *mut Server, conn: *mut Connection) {
 const MAX_REQUEST_LENGTH: u64 = 4000;
 
 /// Receiving request.
-#[no_mangle]
-pub extern "C" fn poll_recv_request(server: *mut Server, conn: *mut Connection) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-
+fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
     assert_eq!(conn.state, bindings::connection_RECV_REQUEST);
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
@@ -1312,11 +1278,7 @@ fn get_ip_addr(server: &Server, conn: &Connection) -> IpAddr {
 }
 
 /// Add a connection's details to the logfile.
-#[no_mangle]
-pub extern "C" fn log_connection(server: *const Server, conn: *const Connection) {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_ref().expect("connection pointer is null") };
-
+fn log_connection(server: &Server, conn: &Connection) {
     if server.logfile.is_null() {
         return;
     }
@@ -1403,11 +1365,7 @@ pub extern "C" fn free_connection(server: *mut Server, conn: *mut Connection) {
 }
 
 /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
-#[no_mangle]
-pub extern "C" fn recycle_connection(server: *mut Server, conn: *mut Connection) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-
+fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     let socket_tmp = conn.socket;
     conn.socket = -1; // so free_connection() doesn't close it
     free_connection(server, conn);
@@ -1550,11 +1508,7 @@ pub extern "C" fn remove_connection(server: *mut Server, index: libc::c_int) {
 
 /// If a connection has been idle for more than timeout_secs, it will be marked as DONE and killed
 /// off in httpd_poll().
-#[no_mangle]
-pub extern "C" fn poll_check_timeout(server: *const Server, conn: *mut Connection) {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-
+fn poll_check_timeout(server: &Server, conn: &mut Connection) {
     if server.timeout_secs > 0 {
         if server.now - conn.last_active >= server.timeout_secs as i64 {
             conn.conn_close = 1;
@@ -1573,10 +1527,7 @@ fn nonblock_socket(sock: RawFd) {
 }
 
 /// Accept a connection from sockin and add it to the connection queue.
-#[no_mangle]
-pub extern "C" fn accept_connection(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-
+fn accept_connection(server: &mut Server) {
     let fd = match socket::accept(server.sockin) {
         Ok(fd) => fd,
         Err(e) => {
