@@ -37,7 +37,7 @@ struct Connection {
     socket: ::std::os::raw::c_int,
     client: In6Addr,
     last_active: libc::time_t,
-    state: ::std::os::raw::c_uint,
+    state: ConnectionState,
     request: *mut ::std::os::raw::c_char,
     request_length: bindings::size_t,
     method: *mut ::std::os::raw::c_char,
@@ -56,7 +56,7 @@ struct Connection {
     header_only: ::std::os::raw::c_int,
     http_code: ::std::os::raw::c_int,
     conn_close: ::std::os::raw::c_int,
-    reply_type: ::std::os::raw::c_uint,
+    reply_type: ConnectionReplyType,
     reply: *mut ::std::os::raw::c_char,
     reply_dont_free: ::std::os::raw::c_int,
     reply_fd: ::std::os::raw::c_int,
@@ -65,12 +65,6 @@ struct Connection {
     reply_sent: libc::off_t,
     total_sent: libc::off_t,
 }
-const CONNECTION_RECV_REQUEST: ::std::os::raw::c_uint = 0;
-const CONNECTION_SEND_HEADER: ::std::os::raw::c_uint = 1;
-const CONNECTION_SEND_REPLY: ::std::os::raw::c_uint = 2;
-const CONNECTION_DONE: ::std::os::raw::c_uint = 3;
-const CONNECTION_REPLY_GENERATED: ::std::os::raw::c_uint = 0;
-const CONNECTION_REPLY_FROMFILE: ::std::os::raw::c_uint = 1;
 #[derive(Copy, Clone)]
 struct In6Addr {
     __in6_u: In6AddrUnion,
@@ -80,6 +74,20 @@ union In6AddrUnion {
     __u6_addr8: [u8; 16usize],
     __u6_addr16: [u16; 8usize],
     __u6_addr32: [u32; 4usize],
+}
+
+#[derive(Debug, PartialEq)]
+enum ConnectionState {
+    ReceiveRequest,
+    SendHeader,
+    SendReply,
+    Done,
+}
+
+#[derive(Debug, PartialEq)]
+enum ConnectionReplyType {
+    Generated,
+    FromFile,
 }
 
 // TODO: Include this as a file.
@@ -552,7 +560,7 @@ fn default_reply(
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-    conn.reply_type = CONNECTION_REPLY_GENERATED;
+    conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = errcode;
     conn.reply_start = 0; // Reset in case the request set a range.
 }
@@ -595,7 +603,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-    conn.reply_type = CONNECTION_REPLY_GENERATED;
+    conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = 301;
 }
 
@@ -693,7 +701,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-    conn.reply_type = CONNECTION_REPLY_GENERATED;
+    conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = 200;
 }
 
@@ -909,7 +917,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
     }
 
     conn.reply_fd = file.into_raw_fd();
-    conn.reply_type = CONNECTION_REPLY_FROMFILE;
+    conn.reply_type = ConnectionReplyType::FromFile;
     let lastmod = metadata
         .modified()
         .unwrap()
@@ -1097,7 +1105,7 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     }
 
     // advance state
-    conn.state = CONNECTION_SEND_HEADER;
+    conn.state = ConnectionState::SendHeader;
 
     /* request not needed anymore */
     unsafe { libc::free(conn.request as *mut libc::c_void) };
@@ -1121,7 +1129,7 @@ fn send_from_file(
 
 /// Sending reply.
 fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
-    assert!(conn.state == CONNECTION_SEND_REPLY);
+    assert!(conn.state == ConnectionState::SendReply);
     assert!(conn.header_only == 0);
     assert!(conn.reply_length >= conn.reply_sent);
 
@@ -1129,7 +1137,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
 
     let sent;
-    if conn.reply_type == CONNECTION_REPLY_GENERATED {
+    if conn.reply_type == ConnectionReplyType::Generated {
         assert!(!conn.reply.is_null());
         // TODO: Clean up type casts
         let reply = unsafe {
@@ -1159,7 +1167,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
         _ => {
             // closure or other error
             conn.conn_close = 1;
-            conn.state = CONNECTION_DONE;
+            conn.state = ConnectionState::Done;
             return;
         }
     };
@@ -1169,13 +1177,13 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
 
     // check if we're done sending
     if conn.reply_sent == conn.reply_length {
-        conn.state = CONNECTION_DONE;
+        conn.state = ConnectionState::Done;
     }
 }
 
 /// Sending header. Assumes conn->header is not NULL.
 fn poll_send_header(server: &mut Server, conn: &mut Connection) {
-    assert_eq!(conn.state, CONNECTION_SEND_HEADER);
+    assert_eq!(conn.state, ConnectionState::SendHeader);
 
     assert!(!conn.header.is_null());
     let header = unsafe { CStr::from_ptr(conn.header) };
@@ -1197,7 +1205,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
         _ => {
             // closure or other error
             conn.conn_close = 1;
-            conn.state = CONNECTION_DONE;
+            conn.state = ConnectionState::Done;
             return;
         }
     };
@@ -1210,9 +1218,9 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     // check if we're done sending header
     if conn.header_sent == conn.header_length {
         if conn.header_only == 1 {
-            conn.state = CONNECTION_DONE;
+            conn.state = ConnectionState::Done;
         } else {
-            conn.state = CONNECTION_SEND_REPLY;
+            conn.state = ConnectionState::SendReply;
             // go straight on to body, don't go through another iteration of the select() loop
             poll_send_reply(server, conn);
         }
@@ -1225,7 +1233,7 @@ const MAX_REQUEST_LENGTH: u64 = 4000;
 
 /// Receiving request.
 fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
-    assert_eq!(conn.state, CONNECTION_RECV_REQUEST);
+    assert_eq!(conn.state, ConnectionState::ReceiveRequest);
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
     let recvd = bindings::size_t::try_from(
@@ -1238,7 +1246,7 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
             _ => {
                 // closure or other error
                 conn.conn_close = 1;
-                conn.state = CONNECTION_DONE;
+                conn.state = ConnectionState::Done;
                 return;
             }
         },
@@ -1276,12 +1284,12 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
     if conn.request_length > MAX_REQUEST_LENGTH {
         let reason = "Your request was dropped because it was too long.";
         default_reply(server, conn, 413, "Request Entity Too Large", reason);
-        conn.state = CONNECTION_SEND_HEADER;
+        conn.state = ConnectionState::SendHeader;
     }
 
     // if we've moved on to the next state, try to send right away, instead of going through
     // another iteration of the select() loop.
-    if conn.state == CONNECTION_SEND_HEADER {
+    if conn.state == ConnectionState::SendHeader {
         poll_send_header(server, conn);
     }
 }
@@ -1444,7 +1452,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.reply_sent = 0;
     conn.total_sent = 0;
 
-    conn.state = CONNECTION_RECV_REQUEST; // ready for another
+    conn.state = ConnectionState::ReceiveRequest; // ready for another
 }
 
 /// Allocate and initialize an empty connection.
@@ -1459,7 +1467,7 @@ fn new_connection(server: &Server) -> Connection {
         last_active: server.now,
         // Make it harmless so it gets garbage-collected if it should, for some reason, fail to be
         // correctly filled out.
-        state: CONNECTION_DONE,
+        state: ConnectionState::Done,
         request: null_mut(),
         request_length: 0,
         method: null_mut(),
@@ -1478,7 +1486,7 @@ fn new_connection(server: &Server) -> Connection {
         header_only: 0,
         http_code: 0,
         conn_close: 1,
-        reply_type: CONNECTION_RECV_REQUEST,
+        reply_type: ConnectionReplyType::Generated,
         reply: null_mut(),
         reply_dont_free: 0, // TODO: remove unused?
         reply_fd: -1,
@@ -1531,7 +1539,7 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection) {
     if server.timeout_secs > 0 {
         if server.now - conn.last_active >= server.timeout_secs as i64 {
             conn.conn_close = 1;
-            conn.state = CONNECTION_DONE;
+            conn.state = ConnectionState::Done;
         }
     }
 }
@@ -1573,7 +1581,7 @@ fn accept_connection(server: &mut Server) {
     let mut conn = new_connection(server);
     conn.socket = fd;
     nonblock_socket(conn.socket);
-    conn.state = CONNECTION_RECV_REQUEST;
+    conn.state = ConnectionState::ReceiveRequest;
 
     // Set connection client address.
     match addr {
@@ -1620,16 +1628,15 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
     };
     for conn in connections.iter() {
         match conn.state {
-            CONNECTION_DONE => {}
-            CONNECTION_RECV_REQUEST => {
+            ConnectionState::Done => {}
+            ConnectionState::ReceiveRequest => {
                 recv_set.insert(conn.socket);
                 timeout_required = true;
             }
-            CONNECTION_SEND_HEADER | CONNECTION_SEND_REPLY => {
+            ConnectionState::SendHeader | ConnectionState::SendReply => {
                 send_set.insert(conn.socket);
                 timeout_required = true;
             }
-            _ => panic!("Invalid connection state"),
         }
     }
 
@@ -1675,29 +1682,28 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
         poll_check_timeout(server, conn);
 
         match conn.state {
-            CONNECTION_RECV_REQUEST => {
+            ConnectionState::ReceiveRequest => {
                 if recv_set.contains(conn.socket) {
                     poll_recv_request(server, conn);
                 }
             }
-            CONNECTION_SEND_HEADER => {
+            ConnectionState::SendHeader => {
                 if send_set.contains(conn.socket) {
                     poll_send_header(server, conn);
                 }
             }
-            CONNECTION_SEND_REPLY => {
+            ConnectionState::SendReply => {
                 if send_set.contains(conn.socket) {
                     poll_send_reply(server, conn);
                 }
             }
-            CONNECTION_DONE => {
+            ConnectionState::Done => {
                 // (handled later; ignore for now as it's a valid state)
             }
-            _ => panic!("Invalid connection state"),
         };
 
         // Handling SEND_REPLY could have set the state to done.
-        if conn.state == CONNECTION_DONE {
+        if conn.state == ConnectionState::Done {
             // clean out finished connection
             if conn.conn_close == 1 {
                 free_connection(server, conn); // logs connection and drops fields
