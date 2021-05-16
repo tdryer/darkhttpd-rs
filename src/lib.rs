@@ -7,7 +7,7 @@ use std::io::BufRead;
 use std::net::{IpAddr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::ptr::null_mut;
 use std::slice;
 
@@ -34,7 +34,7 @@ macro_rules! abort {
 
 // TODO: Oxidize types
 struct Connection {
-    socket: Option<RawFd>,
+    socket: Option<TcpStream>,
     client: IpAddr,
     last_active: libc::time_t,
     state: ConnectionState,
@@ -1092,10 +1092,14 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
         let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
         let buf = &conn.reply.as_ref().unwrap().as_bytes()
             [start..start + usize::try_from(send_len).unwrap()];
-        sent = socket::send(conn.socket.unwrap(), buf, socket::MsgFlags::empty());
+        sent = socket::send(
+            conn.socket.as_ref().unwrap().as_raw_fd(),
+            buf,
+            socket::MsgFlags::empty(),
+        );
     } else {
         sent = send_from_file(
-            conn.socket.unwrap(),
+            conn.socket.as_ref().unwrap().as_raw_fd(),
             conn.reply_fd.unwrap(),
             conn.reply_start + conn.reply_sent,
             send_len.try_into().unwrap(),
@@ -1134,7 +1138,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     conn.last_active = server.now;
 
     let sent = match socket::send(
-        conn.socket.unwrap(),
+        conn.socket.as_ref().unwrap().as_raw_fd(),
         &header[conn.header_sent as usize..header.len() - conn.header_sent as usize],
         socket::MsgFlags::empty(),
     ) {
@@ -1178,7 +1182,11 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
     let recvd = bindings::size_t::try_from(
-        match socket::recv(conn.socket.unwrap(), &mut buf, socket::MsgFlags::empty()) {
+        match socket::recv(
+            conn.socket.as_ref().unwrap().as_raw_fd(),
+            &mut buf,
+            socket::MsgFlags::empty(),
+        ) {
             Ok(recvd) if recvd > 0 => recvd,
             Err(nix::Error::Sys(Errno::EAGAIN)) => {
                 // would block
@@ -1289,20 +1297,17 @@ fn log_connection(server: &Server, conn: &Connection) {
 fn free_connection(server: &mut Server, conn: &mut Connection) {
     log_connection(server, conn);
 
-    if let Some(fd) = conn.socket.take() {
-        close(fd).expect("close failed");
-    }
     if let Some(fd) = conn.reply_fd.take() {
         close(fd).expect("close failed");
     }
+
     // If we ran out of sockets, try to resume accepting.
     server.accepting = 1;
 }
 
 /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
 fn recycle_connection(server: &mut Server, conn: &mut Connection) {
-    let socket_tmp = conn.socket;
-    conn.socket = None; // so free_connection() doesn't close it
+    let socket_tmp = conn.socket.take(); // so free_connection() doesn't close it
     free_connection(server, conn);
     conn.socket = socket_tmp;
 
@@ -1333,9 +1338,9 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
 }
 
 /// Allocate and initialize an empty connection.
-fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection {
+fn new_connection(server: &Server, stream: TcpStream, client: IpAddr) -> Connection {
     Connection {
-        socket: Some(socket),
+        socket: Some(stream),
         client,
         last_active: server.now,
         state: ConnectionState::ReceiveRequest,
@@ -1411,15 +1416,6 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection) {
     }
 }
 
-/// Make the specified socket non-blocking.
-fn nonblock_socket(sock: RawFd) {
-    let stream = unsafe { TcpStream::from_raw_fd(sock) };
-    stream
-        .set_nonblocking(true)
-        .expect("set_nonblocking failed");
-    stream.into_raw_fd();
-}
-
 /// Accept a connection from sockin and add it to the connection queue.
 fn accept_connection(server: &mut Server) {
     let fd = match socket::accept(server.sockin) {
@@ -1444,10 +1440,14 @@ fn accept_connection(server: &mut Server) {
         }
     };
 
-    nonblock_socket(fd);
+    let stream = unsafe { TcpStream::from_raw_fd(fd) };
+
+    stream
+        .set_nonblocking(true)
+        .expect("set_nonblocking failed");
 
     // Allocate and initialize struct connection.
-    let conn = new_connection(server, fd, addr.ip().to_std());
+    let conn = new_connection(server, stream, addr.ip().to_std());
 
     let connections = unsafe {
         (server.connections as *mut Vec<Connection>)
@@ -1484,11 +1484,11 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
         match conn.state {
             ConnectionState::Done => {}
             ConnectionState::ReceiveRequest => {
-                recv_set.insert(conn.socket.unwrap());
+                recv_set.insert(conn.socket.as_ref().unwrap().as_raw_fd());
                 timeout_required = true;
             }
             ConnectionState::SendHeader | ConnectionState::SendReply => {
-                send_set.insert(conn.socket.unwrap());
+                send_set.insert(conn.socket.as_ref().unwrap().as_raw_fd());
                 timeout_required = true;
             }
         }
@@ -1537,17 +1537,17 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
 
         match conn.state {
             ConnectionState::ReceiveRequest => {
-                if recv_set.contains(conn.socket.unwrap()) {
+                if recv_set.contains(conn.socket.as_ref().unwrap().as_raw_fd()) {
                     poll_recv_request(server, conn);
                 }
             }
             ConnectionState::SendHeader => {
-                if send_set.contains(conn.socket.unwrap()) {
+                if send_set.contains(conn.socket.as_ref().unwrap().as_raw_fd()) {
                     poll_send_header(server, conn);
                 }
             }
             ConnectionState::SendReply => {
-                if send_set.contains(conn.socket.unwrap()) {
+                if send_set.contains(conn.socket.as_ref().unwrap().as_raw_fd()) {
                     poll_send_reply(server, conn);
                 }
             }
