@@ -54,7 +54,7 @@ struct Connection {
     http_code: ::std::os::raw::c_int,
     conn_close: bool,
     reply_type: ConnectionReplyType,
-    reply: *mut ::std::os::raw::c_char,
+    reply: Option<String>,
     reply_fd: ::std::os::raw::c_int,
     reply_start: libc::off_t,
     reply_length: libc::off_t,
@@ -514,9 +514,8 @@ fn default_reply(
         reason,
         GeneratedOn(server),
     );
-    let reply = CString::new(reply).unwrap();
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = reply.into_raw();
+    conn.reply = Some(reply);
 
     let headers = format!(
         "HTTP/1.1 {} {}\r\n\
@@ -562,9 +561,8 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         location,
         GeneratedOn(server),
     );
-    let reply = CString::new(reply).unwrap();
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = reply.into_raw();
+    conn.reply = Some(reply);
 
     let headers = format!(
         "HTTP/1.1 301 Moved Permanently\r\n\
@@ -659,9 +657,8 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         Listing(entries),
         GeneratedOn(server),
     );
-    let reply = CString::new(reply).unwrap();
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = reply.into_raw();
+    conn.reply = Some(reply);
 
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -1091,16 +1088,10 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
 
     let sent;
     if conn.reply_type == ConnectionReplyType::Generated {
-        assert!(!conn.reply.is_null());
-        // TODO: Clean up type casts
-        let reply = unsafe {
-            std::slice::from_raw_parts(
-                conn.reply as *const u8,
-                conn.reply_length.try_into().unwrap(),
-            )
-        };
+        assert!(conn.reply.is_some());
         let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
-        let buf = &reply[start..start + usize::try_from(send_len).unwrap()];
+        let buf = &conn.reply.as_ref().unwrap().as_bytes()
+            [start..start + usize::try_from(send_len).unwrap()];
         sent = socket::send(conn.socket, buf, socket::MsgFlags::empty());
     } else {
         sent = send_from_file(
@@ -1301,9 +1292,6 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     if conn.socket != -1 {
         close(conn.socket).expect("close failed");
     }
-    if !conn.reply.is_null() {
-        unsafe { CString::from_raw(conn.reply) };
-    }
     if conn.reply_fd != -1 {
         close(conn.reply_fd).expect("close failed");
     }
@@ -1334,7 +1322,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.header_only = false;
     conn.http_code = 0;
     conn.conn_close = true;
-    conn.reply = null_mut();
+    conn.reply = None;
     conn.reply_fd = -1;
     conn.reply_start = 0;
     conn.reply_length = 0;
@@ -1367,7 +1355,7 @@ fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection 
         http_code: 0,
         conn_close: true,
         reply_type: ConnectionReplyType::Generated,
-        reply: null_mut(),
+        reply: None,
         reply_fd: -1,
         reply_start: 0,
         reply_length: 0,
