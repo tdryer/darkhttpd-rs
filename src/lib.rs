@@ -34,7 +34,7 @@ macro_rules! abort {
 
 // TODO: Oxidize types
 struct Connection {
-    socket: ::std::os::raw::c_int,
+    socket: RawFd,
     client: IpAddr,
     last_active: libc::time_t,
     state: ConnectionState,
@@ -1429,14 +1429,12 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
 }
 
 /// Allocate and initialize an empty connection.
-fn new_connection(server: &Server) -> Connection {
+fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection {
     Connection {
-        socket: -1,
-        client: IpAddr::from([0, 0, 0, 0]),
+        socket,
+        client,
         last_active: server.now,
-        // Make it harmless so it gets garbage-collected if it should, for some reason, fail to be
-        // correctly filled out.
-        state: ConnectionState::Done,
+        state: ConnectionState::ReceiveRequest,
         request: null_mut(),
         request_length: 0,
         method: null_mut(),
@@ -1544,12 +1542,10 @@ fn accept_connection(server: &mut Server) {
         }
     };
 
+    nonblock_socket(fd);
+
     // Allocate and initialize struct connection.
-    let mut conn = new_connection(server);
-    conn.socket = fd;
-    nonblock_socket(conn.socket);
-    conn.state = ConnectionState::ReceiveRequest;
-    conn.client = addr.ip().to_std();
+    let conn = new_connection(server, fd, addr.ip().to_std());
 
     let connections = unsafe {
         (server.connections as *mut Vec<Connection>)
