@@ -48,8 +48,7 @@ struct Connection {
     range_end: libc::off_t,
     range_begin_given: libc::off_t,
     range_end_given: libc::off_t,
-    header: *mut ::std::os::raw::c_char,
-    header_length: bindings::size_t,
+    header: Option<String>,
     header_sent: bindings::size_t,
     header_only: bool,
     http_code: ::std::os::raw::c_int,
@@ -541,9 +540,7 @@ fn default_reply(
             ""
         }
     );
-    let headers = CString::new(headers).unwrap();
-    conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw();
+    conn.header = Some(headers);
     conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = errcode;
     conn.reply_start = 0; // Reset in case the request set a range.
@@ -584,9 +581,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         keep_alive(server, conn),
         conn.reply_length,
     );
-    let headers = CString::new(headers).unwrap();
-    conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw();
+    conn.header = Some(headers);
     conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = 301;
 }
@@ -682,9 +677,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         keep_alive(server, conn),
         conn.reply_length,
     );
-    let headers = CString::new(headers).unwrap();
-    conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw();
+    conn.header = Some(headers);
     conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = 200;
 }
@@ -712,9 +705,7 @@ fn not_modified(server: &Server, conn: &mut Connection) {
         server_hdr,
         keep_alive(server, conn),
     );
-    let headers = CString::new(headers).unwrap();
-    conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw();
+    conn.header = Some(headers);
     conn.http_code = 304;
     conn.header_only = true;
     conn.reply_length = 0;
@@ -956,9 +947,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
             mimetype,
             HttpDate(lastmod.try_into().unwrap())
         );
-        let headers = CString::new(headers).unwrap();
-        conn.header_length = headers.as_bytes().len() as bindings::size_t;
-        conn.header = headers.into_raw();
+        conn.header = Some(headers);
         conn.http_code = 206;
         return;
     }
@@ -982,9 +971,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         mimetype,
         HttpDate(lastmod.try_into().unwrap())
     );
-    let headers = CString::new(headers).unwrap();
-    conn.header_length = headers.as_bytes().len() as bindings::size_t;
-    conn.header = headers.into_raw();
+    conn.header = Some(headers);
     conn.http_code = 200;
 }
 
@@ -1151,16 +1138,13 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
 fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     assert_eq!(conn.state, ConnectionState::SendHeader);
 
-    assert!(!conn.header.is_null());
-    let header = unsafe { CStr::from_ptr(conn.header) };
-    assert_eq!(conn.header_length, header.to_bytes().len() as u64);
+    let header = conn.header.as_ref().unwrap().as_bytes();
 
     conn.last_active = server.now;
 
     let sent = match socket::send(
         conn.socket,
-        &header.to_bytes()
-            [conn.header_sent as usize..conn.header_length as usize - conn.header_sent as usize],
+        &header[conn.header_sent as usize..header.len() - conn.header_sent as usize],
         socket::MsgFlags::empty(),
     ) {
         Ok(sent) if sent > 0 => sent,
@@ -1182,7 +1166,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     server.total_out += u64::try_from(sent).unwrap();
 
     // check if we're done sending header
-    if conn.header_sent == conn.header_length {
+    if conn.header_sent == header.len() as u64 {
         if conn.header_only {
             conn.state = ConnectionState::Done;
         } else {
@@ -1317,9 +1301,6 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     if conn.socket != -1 {
         close(conn.socket).expect("close failed");
     }
-    if !conn.header.is_null() {
-        unsafe { CString::from_raw(conn.header) };
-    }
     if !conn.reply.is_null() {
         unsafe { CString::from_raw(conn.reply) };
     }
@@ -1348,8 +1329,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.range_end = 0;
     conn.range_begin_given = 0;
     conn.range_end_given = 0;
-    conn.header = null_mut();
-    conn.header_length = 0;
+    conn.header = None;
     conn.header_sent = 0;
     conn.header_only = false;
     conn.http_code = 0;
@@ -1381,8 +1361,7 @@ fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection 
         range_end: 0,
         range_begin_given: 0,
         range_end_given: 0,
-        header: null_mut(),
-        header_length: 0,
+        header: None,
         header_sent: 0,
         header_only: false,
         http_code: 0,
