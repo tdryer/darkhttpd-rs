@@ -41,7 +41,7 @@ struct Connection {
     request: *mut ::std::os::raw::c_char,
     request_length: bindings::size_t,
     method: Option<String>,
-    url: *mut ::std::os::raw::c_char,
+    url: Option<String>,
     referer: Option<String>,
     user_agent: Option<String>,
     authorization: Option<String>,
@@ -799,9 +799,9 @@ fn process_get(server: &Server, conn: &mut Connection) {
         .to_str()
         .unwrap();
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-    let url = unsafe { CStr::from_ptr(conn.url) }.to_str().unwrap();
 
     // strip query params
+    let url = conn.url.as_ref().unwrap();
     let stripped_url = url.splitn(2, '?').next().unwrap().to_string();
 
     // work out path of file being requested
@@ -894,7 +894,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
     };
 
     if metadata.is_dir() {
-        let url = format!("{}/", unsafe { CStr::from_ptr(conn.url) }.to_str().unwrap());
+        let url = format!("{}/", conn.url.as_ref().unwrap());
         redirect(server, conn, &url);
         return;
     } else if !metadata.is_file() {
@@ -1009,8 +1009,7 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
 
     // parse URL
     if let Some(url) = request_line.next() {
-        let url = CString::new(url).unwrap();
-        conn.url = url.into_raw();
+        conn.url = Some(url.to_string());
     } else {
         return false;
     }
@@ -1286,14 +1285,6 @@ impl<'a> std::fmt::Display for LogEncoded<'a> {
     }
 }
 
-fn str_from_ptr<'a>(ptr: *const libc::c_char) -> Option<&'a str> {
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { CStr::from_ptr(ptr) }.to_str().unwrap())
-    }
-}
-
 /// Add a connection's details to the logfile.
 fn log_connection(server: &Server, conn: &Connection) {
     if server.logfile.is_null() {
@@ -1308,14 +1299,12 @@ fn log_connection(server: &Server, conn: &Connection) {
         None => return,
     };
 
-    let url = str_from_ptr(conn.url).unwrap();
-
     let message = CString::new(format!(
         "{} - - {} \"{} {} HTTP/1.1\" {} {} \"{}\" \"{}\"\n",
         conn.client,
         ClfDate(server.now),
         LogEncoded(method),
-        LogEncoded(url),
+        LogEncoded(conn.url.as_ref().unwrap()),
         conn.http_code,
         conn.total_sent,
         LogEncoded(conn.referer.as_deref().unwrap_or("")),
@@ -1348,9 +1337,6 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     if !conn.request.is_null() {
         unsafe { libc::free(conn.request as *mut libc::c_void) };
     }
-    if !conn.url.is_null() {
-        unsafe { CString::from_raw(conn.url) };
-    }
     if !conn.header.is_null() {
         unsafe { CString::from_raw(conn.header) };
     }
@@ -1375,7 +1361,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.request = null_mut();
     conn.request_length = 0;
     conn.method = None;
-    conn.url = null_mut();
+    conn.url = None;
     conn.referer = None;
     conn.user_agent = None;
     conn.authorization = None;
@@ -1409,7 +1395,7 @@ fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection 
         request: null_mut(),
         request_length: 0,
         method: None,
-        url: null_mut(),
+        url: None,
         referer: None,
         user_agent: None,
         authorization: None,
