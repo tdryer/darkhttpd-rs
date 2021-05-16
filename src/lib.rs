@@ -32,9 +32,8 @@ macro_rules! abort {
     })
 }
 
-// TODO: Remove `pub`
 // TODO: Oxidize types
-pub struct Connection {
+struct Connection {
     socket: ::std::os::raw::c_int,
     client: In6Addr,
     last_active: libc::time_t,
@@ -1374,11 +1373,7 @@ fn log_connection(server: &Server, conn: &Connection) {
 }
 
 /// Log a connection, then cleanly deallocate its internals.
-#[no_mangle]
-pub extern "C" fn free_connection(server: *mut Server, conn: *mut Connection) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let conn = unsafe { conn.as_mut().expect("connection pointer is null") };
-
+fn free_connection(server: &mut Server, conn: &mut Connection) {
     log_connection(server, conn);
 
     if conn.socket != -1 {
@@ -1509,42 +1504,15 @@ pub extern "C" fn init_connections_list(server: *mut Server) {
 pub extern "C" fn free_connections_list(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
     assert!(!server.connections.is_null());
-    let connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
-    assert!(connections.is_empty(), "connections is not empty");
+    let mut connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
+    for mut conn in connections.drain(..) {
+        free_connection(server, &mut conn); // logs connection and drops fields
+    }
     server.connections = null_mut();
 }
 
-/// Return 1 if connection exists at index.
-#[no_mangle]
-pub extern "C" fn connection_exists(server: *const Server, index: libc::c_int) -> libc::c_int {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    let connections = unsafe {
-        (server.connections as *const Vec<Connection>)
-            .as_ref()
-            .expect("connections pointer is null")
-    };
-    assert!(index >= 0, "invalid connection index");
-    (index < (connections.len() as libc::c_int)) as libc::c_int
-}
-
-/// Get connection by index.
-#[no_mangle]
-pub extern "C" fn get_connection(server: *mut Server, index: libc::c_int) -> *mut Connection {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    let connections = unsafe {
-        (server.connections as *mut Vec<Connection>)
-            .as_mut()
-            .expect("connections pointer is null")
-    };
-    connections
-        .get_mut(index as usize)
-        .expect("invalid connection index")
-}
-
 /// Remove connection by index.
-#[no_mangle]
-pub extern "C" fn remove_connection(server: *mut Server, index: libc::c_int) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+fn remove_connection(server: &mut Server, index: libc::c_int) {
     let connections = unsafe {
         (server.connections as *mut Vec<Connection>)
             .as_mut()

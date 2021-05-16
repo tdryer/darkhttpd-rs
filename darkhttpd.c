@@ -738,15 +738,6 @@ static void parse_commandline(const int argc, char *argv[]) {
     }
 }
 
-extern int connection_exists(const struct server *srv, int index);
-
-extern struct connection *get_connection(struct server *srv, int index);
-
-extern void remove_connection(struct server *srv, int index);
-
-/* Log a connection, then cleanly deallocate its internals. */
-extern void free_connection(struct server *srv, struct connection *conn);
-
 /* Main loop of the httpd - a select() and then delegation to accept
  * connections, handle receiving of requests, and sending of replies.
  */
@@ -970,15 +961,6 @@ int main(int argc, char **argv) {
     xclose(srv.sockin);
     if (srv.logfile != NULL) fclose(srv.logfile);
     if (srv.pidfile_name) pidfile_remove();
-
-    /* close and free connections */
-    {
-        while (connection_exists(&srv, 0)) {
-            struct connection *conn = get_connection(&srv, 0);
-            free_connection(&srv, conn);  // logs connection and drops fields
-            remove_connection(&srv, 0); // drops connection
-        }
-    }
 
     /* free the mallocs */
     {
