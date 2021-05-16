@@ -4,7 +4,7 @@ use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::BufRead;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream};
+use std::net::{IpAddr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
@@ -35,7 +35,7 @@ macro_rules! abort {
 // TODO: Oxidize types
 struct Connection {
     socket: ::std::os::raw::c_int,
-    client: In6Addr,
+    client: IpAddr,
     last_active: libc::time_t,
     state: ConnectionState,
     request: *mut ::std::os::raw::c_char,
@@ -64,16 +64,6 @@ struct Connection {
     reply_length: libc::off_t,
     reply_sent: libc::off_t,
     total_sent: libc::off_t,
-}
-#[derive(Copy, Clone)]
-struct In6Addr {
-    __in6_u: In6AddrUnion,
-}
-#[derive(Copy, Clone)]
-union In6AddrUnion {
-    __u6_addr8: [u8; 16usize],
-    __u6_addr16: [u16; 8usize],
-    __u6_addr32: [u32; 4usize],
 }
 
 #[derive(Debug, PartialEq)]
@@ -1322,19 +1312,6 @@ fn str_from_ptr<'a>(ptr: *const libc::c_char) -> Option<&'a str> {
     }
 }
 
-// TODO: replace C get_address_text
-fn get_ip_addr(server: &Server, conn: &Connection) -> IpAddr {
-    match server.inet6 {
-        1 => IpAddr::from(Ipv6Addr::from(unsafe { conn.client.__in6_u.__u6_addr8 })),
-        _ => {
-            let data: [u8; 4] = unsafe { conn.client.__in6_u.__u6_addr8 }[0..4]
-                .try_into()
-                .unwrap();
-            IpAddr::from(Ipv4Addr::from(data))
-        }
-    }
-}
-
 /// Add a connection's details to the logfile.
 fn log_connection(server: &Server, conn: &Connection) {
     if server.logfile.is_null() {
@@ -1354,7 +1331,7 @@ fn log_connection(server: &Server, conn: &Connection) {
 
     let message = CString::new(format!(
         "{} - - {} \"{} {} HTTP/1.1\" {} {} \"{}\" \"{}\"\n",
-        get_ip_addr(server, conn),
+        conn.client,
         ClfDate(server.now),
         LogEncoded(method),
         LogEncoded(url),
@@ -1459,11 +1436,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
 fn new_connection(server: &Server) -> Connection {
     Connection {
         socket: -1,
-        client: In6Addr {
-            __in6_u: In6AddrUnion {
-                __u6_addr8: [0; 16],
-            },
-        },
+        client: IpAddr::from([0, 0, 0, 0]),
         last_active: server.now,
         // Make it harmless so it gets garbage-collected if it should, for some reason, fail to be
         // correctly filled out.
@@ -1582,18 +1555,7 @@ fn accept_connection(server: &mut Server) {
     conn.socket = fd;
     nonblock_socket(conn.socket);
     conn.state = ConnectionState::ReceiveRequest;
-
-    // Set connection client address.
-    match addr {
-        socket::InetAddr::V6(addr) => {
-            let conn_client_addr = unsafe { &mut conn.client.__in6_u.__u6_addr8 };
-            conn_client_addr.copy_from_slice(&addr.sin6_addr.s6_addr);
-        }
-        socket::InetAddr::V4(addr) => {
-            let conn_client_addr = unsafe { &mut conn.client.__in6_u.__u6_addr32 };
-            conn_client_addr[0] = addr.sin_addr.s_addr;
-        }
-    }
+    conn.client = addr.ip().to_std();
 
     let connections = unsafe {
         (server.connections as *mut Vec<Connection>)
