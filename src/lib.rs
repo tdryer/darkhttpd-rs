@@ -1289,10 +1289,10 @@ fn log_connection(server: &Server, conn: &Connection) {
 fn free_connection(server: &mut Server, conn: &mut Connection) {
     log_connection(server, conn);
 
-    if let Some(fd) = conn.socket {
+    if let Some(fd) = conn.socket.take() {
         close(fd).expect("close failed");
     }
-    if let Some(fd) = conn.reply_fd {
+    if let Some(fd) = conn.reply_fd.take() {
         close(fd).expect("close failed");
     }
     // If we ran out of sockets, try to resume accepting.
