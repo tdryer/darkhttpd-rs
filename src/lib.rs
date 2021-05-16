@@ -52,13 +52,11 @@ struct Connection {
     header: *mut ::std::os::raw::c_char,
     header_length: bindings::size_t,
     header_sent: bindings::size_t,
-    header_dont_free: ::std::os::raw::c_int,
-    header_only: ::std::os::raw::c_int,
+    header_only: bool,
     http_code: ::std::os::raw::c_int,
-    conn_close: ::std::os::raw::c_int,
+    conn_close: bool,
     reply_type: ConnectionReplyType,
     reply: *mut ::std::os::raw::c_char,
-    reply_dont_free: ::std::os::raw::c_int,
     reply_fd: ::std::os::raw::c_int,
     reply_start: libc::off_t,
     reply_length: libc::off_t,
@@ -218,7 +216,7 @@ pub extern "C" fn free_keep_alive_field(server: *mut Server) {
 fn keep_alive(server: &Server, conn: &Connection) -> String {
     // TODO: We've made the keep alive field caching pretty useless by cloning the string each
     // time. Return a reference once this can be a method?
-    if conn.conn_close == 1 {
+    if conn.conn_close {
         "Connection: close\r\n".to_string()
     } else {
         unsafe { (server.keep_alive_field as *const String).as_ref() }
@@ -722,7 +720,7 @@ fn not_modified(server: &Server, conn: &mut Connection) {
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
     conn.http_code = 304;
-    conn.header_only = 1;
+    conn.header_only = true;
     conn.reply_length = 0;
 }
 
@@ -1021,7 +1019,7 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
     // parse protocol to determine conn.close
     if let Some(protocol) = request_line.next() {
         if protocol.to_uppercase() == "HTTP/1.1" {
-            conn.conn_close = 0;
+            conn.conn_close = false;
         }
     }
 
@@ -1029,15 +1027,15 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
     if let Some(connection) = parse_field(conn, "Connection: ") {
         let connection = connection.to_lowercase();
         if connection == "close" {
-            conn.conn_close = 1;
+            conn.conn_close = true;
         } else if connection == "keep-alive" {
-            conn.conn_close = 0;
+            conn.conn_close = false;
         }
     }
 
     // cmdline flag can be used to deny keep-alive
     if server.want_keepalive == 0 {
-        conn.conn_close = 1;
+        conn.conn_close = true;
     }
 
     // parse important fields
@@ -1088,7 +1086,7 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
         process_get(server, conn);
     } else if method == "HEAD" {
         process_get(server, conn);
-        conn.header_only = 1;
+        conn.header_only = true;
     } else {
         let reason = "The method you specified is not implemented.";
         default_reply(server, conn, 501, "Not Implemented", reason);
@@ -1120,7 +1118,7 @@ fn send_from_file(
 /// Sending reply.
 fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     assert!(conn.state == ConnectionState::SendReply);
-    assert!(conn.header_only == 0);
+    assert!(!conn.header_only);
     assert!(conn.reply_length >= conn.reply_sent);
 
     // TODO: off_t can be wider than size_t?
@@ -1156,7 +1154,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
         }
         _ => {
             // closure or other error
-            conn.conn_close = 1;
+            conn.conn_close = true;
             conn.state = ConnectionState::Done;
             return;
         }
@@ -1194,7 +1192,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
         }
         _ => {
             // closure or other error
-            conn.conn_close = 1;
+            conn.conn_close = true;
             conn.state = ConnectionState::Done;
             return;
         }
@@ -1207,7 +1205,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
 
     // check if we're done sending header
     if conn.header_sent == conn.header_length {
-        if conn.header_only == 1 {
+        if conn.header_only {
             conn.state = ConnectionState::Done;
         } else {
             conn.state = ConnectionState::SendReply;
@@ -1235,7 +1233,7 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
             }
             _ => {
                 // closure or other error
-                conn.conn_close = 1;
+                conn.conn_close = true;
                 conn.state = ConnectionState::Done;
                 return;
             }
@@ -1382,10 +1380,10 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     if !conn.authorization.is_null() {
         unsafe { CString::from_raw(conn.authorization) };
     }
-    if !conn.header.is_null() && conn.header_dont_free == 0 {
+    if !conn.header.is_null() {
         unsafe { CString::from_raw(conn.header) };
     }
-    if !conn.reply.is_null() && conn.reply_dont_free == 0 {
+    if !conn.reply.is_null() {
         unsafe { CString::from_raw(conn.reply) };
     }
     if conn.reply_fd != -1 {
@@ -1417,12 +1415,10 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.header = null_mut();
     conn.header_length = 0;
     conn.header_sent = 0;
-    conn.header_dont_free = 0;
-    conn.header_only = 0;
+    conn.header_only = false;
     conn.http_code = 0;
-    conn.conn_close = 1;
+    conn.conn_close = true;
     conn.reply = null_mut();
-    conn.reply_dont_free = 0;
     conn.reply_fd = -1;
     conn.reply_start = 0;
     conn.reply_length = 0;
@@ -1455,13 +1451,11 @@ fn new_connection(server: &Server) -> Connection {
         header: null_mut(),
         header_length: 0,
         header_sent: 0,
-        header_dont_free: 0, // TODO: remove unused?
-        header_only: 0,
+        header_only: false,
         http_code: 0,
-        conn_close: 1,
+        conn_close: true,
         reply_type: ConnectionReplyType::Generated,
         reply: null_mut(),
-        reply_dont_free: 0, // TODO: remove unused?
         reply_fd: -1,
         reply_start: 0,
         reply_length: 0,
@@ -1511,7 +1505,7 @@ fn remove_connection(server: &mut Server, index: libc::c_int) {
 fn poll_check_timeout(server: &Server, conn: &mut Connection) {
     if server.timeout_secs > 0 {
         if server.now - conn.last_active >= server.timeout_secs as i64 {
-            conn.conn_close = 1;
+            conn.conn_close = true;
             conn.state = ConnectionState::Done;
         }
     }
@@ -1667,7 +1661,7 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
         // Handling SEND_REPLY could have set the state to done.
         if conn.state == ConnectionState::Done {
             // clean out finished connection
-            if conn.conn_close == 1 {
+            if conn.conn_close {
                 free_connection(server, conn); // logs connection and drops fields
                 remove_connection(server, index as libc::c_int); // drops connection
             } else {
