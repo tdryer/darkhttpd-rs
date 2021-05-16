@@ -38,8 +38,7 @@ struct Connection {
     client: IpAddr,
     last_active: libc::time_t,
     state: ConnectionState,
-    request: *mut ::std::os::raw::c_char,
-    request_length: bindings::size_t,
+    request: Vec<u8>,
     method: Option<String>,
     url: Option<String>,
     referer: Option<String>,
@@ -410,27 +409,24 @@ impl<'a> std::fmt::Display for HtmlEscaped<'a> {
 /// example: parse_field(conn, "Referer: ");
 #[no_mangle]
 fn parse_field(conn: &Connection, field: &str) -> Option<String> {
-    assert!(!conn.request.is_null());
-    let request = unsafe { CStr::from_ptr(conn.request) };
-
     // TODO: Header names should be case-insensitive.
     // TODO: Parse the request instead of naively searching for the header name.
-    let field_start_pod = match find(field.as_bytes(), request.to_bytes()) {
+    let field_start_pod = match find(field.as_bytes(), &conn.request) {
         Some(field_start_pod) => field_start_pod,
         None => return None,
     };
 
     let value_start_pos = field_start_pod + field.as_bytes().len();
     let mut value_end_pos = 0;
-    for i in value_start_pos..request.to_bytes().len() {
+    for i in value_start_pos..conn.request.len() {
         value_end_pos = i;
-        let c = request.to_bytes()[i];
+        let c = conn.request[i];
         if matches!(c, b'\r' | b'\n') {
             break;
         }
     }
 
-    let value = &request.to_bytes()[value_start_pos..value_end_pos];
+    let value = &conn.request[value_start_pos..value_end_pos];
     Some(String::from_utf8(value.to_vec()).unwrap())
 }
 
@@ -996,7 +992,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
 /// (if given) and the user-agent (if given). Remember to deallocate all these buffers. The method
 /// will be returned in uppercase.
 fn parse_request(server: &Server, conn: &mut Connection) -> bool {
-    let request: &str = unsafe { CStr::from_ptr(conn.request) }.to_str().unwrap();
+    let request = std::str::from_utf8(&conn.request).unwrap();
     let mut lines = request.split(|c| matches!(c, '\r' | '\n'));
     let mut request_line = lines.next().unwrap().split(' ');
 
@@ -1078,9 +1074,8 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     // advance state
     conn.state = ConnectionState::SendHeader;
 
-    /* request not needed anymore */
-    unsafe { libc::free(conn.request as *mut libc::c_void) };
-    conn.request = null_mut(); // important: don't free it again later
+    // request not needed anymore
+    conn.request = Vec::new();
 }
 
 /// Send chunk on socket <s> from FILE *fp, starting at <ofs> and of size <size>.  Use sendfile()
@@ -1200,7 +1195,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
 
 // To prevent a malformed request from eating up too much memory, die once the request exceeds this
 // many bytes:
-const MAX_REQUEST_LENGTH: u64 = 4000;
+const MAX_REQUEST_LENGTH: usize = 4000;
 
 /// Receiving request.
 fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
@@ -1227,35 +1222,23 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
 
     // append to conn.request
     assert!(recvd > 0);
-    let new_request_length = usize::try_from(conn.request_length + recvd + 1).unwrap();
-    conn.request =
-        unsafe { libc::realloc(conn.request as *mut libc::c_void, new_request_length) as *mut i8 };
-    if conn.request.is_null() {
-        panic!("realloc failed");
-    }
-    let request =
-        unsafe { std::slice::from_raw_parts_mut(conn.request as *mut u8, new_request_length) };
-    request[conn.request_length.try_into().unwrap()
-        ..usize::try_from(conn.request_length + recvd).unwrap()]
-        .copy_from_slice(&buf[..recvd.try_into().unwrap()]);
-    conn.request_length += recvd;
-    request[usize::try_from(conn.request_length).unwrap()] = 0;
+    conn.request.extend(&buf[..recvd.try_into().unwrap()]);
     server.total_in += recvd;
 
-    // process request if we have all of it
+    // die if it's too large, or process request if we have all of it
     // TODO: Handle HTTP pipelined requests
-    if request.len() > 2 && &request[request.len() - 1 - 2..request.len() - 1] == b"\n\n" {
-        process_request(server, conn);
-    } else if request.len() > 4 && &request[request.len() - 1 - 4..request.len() - 1] == b"\r\n\r\n"
-    {
-        process_request(server, conn);
-    }
-
-    // die if it's too large
-    if conn.request_length > MAX_REQUEST_LENGTH {
+    if conn.request.len() > MAX_REQUEST_LENGTH {
         let reason = "Your request was dropped because it was too long.";
         default_reply(server, conn, 413, "Request Entity Too Large", reason);
         conn.state = ConnectionState::SendHeader;
+    } else if conn.request.len() >= 2
+        && &conn.request[conn.request.len() - 2..conn.request.len()] == b"\n\n"
+    {
+        process_request(server, conn);
+    } else if conn.request.len() >= 4
+        && &conn.request[conn.request.len() - 4..conn.request.len()] == b"\r\n\r\n"
+    {
+        process_request(server, conn);
     }
 
     // if we've moved on to the next state, try to send right away, instead of going through
@@ -1334,9 +1317,6 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     if conn.socket != -1 {
         close(conn.socket).expect("close failed");
     }
-    if !conn.request.is_null() {
-        unsafe { libc::free(conn.request as *mut libc::c_void) };
-    }
     if !conn.header.is_null() {
         unsafe { CString::from_raw(conn.header) };
     }
@@ -1358,8 +1338,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.socket = socket_tmp;
 
     // don't reset conn->client
-    conn.request = null_mut();
-    conn.request_length = 0;
+    conn.request = Vec::new();
     conn.method = None;
     conn.url = None;
     conn.referer = None;
@@ -1392,8 +1371,7 @@ fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection 
         client,
         last_active: server.now,
         state: ConnectionState::ReceiveRequest,
-        request: null_mut(),
-        request_length: 0,
+        request: Vec::new(),
         method: None,
         url: None,
         referer: None,
