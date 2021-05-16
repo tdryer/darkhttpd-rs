@@ -40,7 +40,7 @@ struct Connection {
     state: ConnectionState,
     request: *mut ::std::os::raw::c_char,
     request_length: bindings::size_t,
-    method: *mut ::std::os::raw::c_char,
+    method: Option<String>,
     url: *mut ::std::os::raw::c_char,
     referer: Option<String>,
     user_agent: Option<String>,
@@ -1002,8 +1002,7 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
 
     // parse method
     if let Some(method) = request_line.next() {
-        let method = CString::new(method.to_uppercase()).unwrap();
-        conn.method = method.into_raw();
+        conn.method = Some(method.to_uppercase())
     } else {
         return false;
     }
@@ -1058,8 +1057,6 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     } else {
         Some(unsafe { CStr::from_ptr(server.auth_key) }.to_str().unwrap())
     };
-    assert!(!conn.method.is_null());
-    let method = unsafe { CStr::from_ptr(conn.method) }.to_str().unwrap();
 
     if !result {
         let reason = "You sent a request that the server couldn't understand.";
@@ -1069,9 +1066,9 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     {
         let reason = "Access denied due to invalid credentials.";
         default_reply(server, conn, 401, "Unauthorized", reason);
-    } else if method == "GET" {
+    } else if conn.method.as_deref().unwrap() == "GET" {
         process_get(server, conn);
-    } else if method == "HEAD" {
+    } else if conn.method.as_deref().unwrap() == "HEAD" {
         process_get(server, conn);
         conn.header_only = true;
     } else {
@@ -1305,11 +1302,12 @@ fn log_connection(server: &Server, conn: &Connection) {
     if conn.http_code == 0 {
         return; // invalid - died in request
     }
-    if conn.method.is_null() {
-        return; // invalid - didn't parse - maybe too long
-    }
+    let method = match &conn.method {
+        Some(method) => method,
+        // invalid - didn't parse - maybe too long
+        None => return,
+    };
 
-    let method = str_from_ptr(conn.method).unwrap();
     let url = str_from_ptr(conn.url).unwrap();
 
     let message = CString::new(format!(
@@ -1350,9 +1348,6 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     if !conn.request.is_null() {
         unsafe { libc::free(conn.request as *mut libc::c_void) };
     }
-    if !conn.method.is_null() {
-        unsafe { CString::from_raw(conn.method) };
-    }
     if !conn.url.is_null() {
         unsafe { CString::from_raw(conn.url) };
     }
@@ -1379,7 +1374,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     // don't reset conn->client
     conn.request = null_mut();
     conn.request_length = 0;
-    conn.method = null_mut();
+    conn.method = None;
     conn.url = null_mut();
     conn.referer = None;
     conn.user_agent = None;
@@ -1413,7 +1408,7 @@ fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection 
         state: ConnectionState::ReceiveRequest,
         request: null_mut(),
         request_length: 0,
-        method: null_mut(),
+        method: None,
         url: null_mut(),
         referer: None,
         user_agent: None,
