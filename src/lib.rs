@@ -7,7 +7,7 @@ use std::io::BufRead;
 use std::net::{IpAddr, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::ptr::null_mut;
 use std::slice;
 
@@ -17,7 +17,6 @@ use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
-use nix::unistd::close;
 
 mod bindings;
 
@@ -55,7 +54,7 @@ struct Connection {
     conn_close: bool,
     reply_type: ConnectionReplyType,
     reply: Option<String>,
-    reply_fd: Option<RawFd>,
+    reply_fd: Option<File>,
     reply_start: libc::off_t,
     reply_length: libc::off_t,
     reply_sent: libc::off_t,
@@ -888,7 +887,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         return;
     }
 
-    conn.reply_fd = Some(file.into_raw_fd());
+    conn.reply_fd = Some(file);
     conn.reply_type = ConnectionReplyType::FromFile;
     let lastmod = metadata
         .modified()
@@ -1100,7 +1099,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     } else {
         sent = send_from_file(
             conn.socket.as_ref().unwrap().as_raw_fd(),
-            conn.reply_fd.unwrap(),
+            conn.reply_fd.as_ref().unwrap().as_raw_fd(),
             conn.reply_start + conn.reply_sent,
             send_len.try_into().unwrap(),
         );
@@ -1296,10 +1295,6 @@ fn log_connection(server: &Server, conn: &Connection) {
 /// Log a connection, then cleanly deallocate its internals.
 fn free_connection(server: &mut Server, conn: &mut Connection) {
     log_connection(server, conn);
-
-    if let Some(fd) = conn.reply_fd.take() {
-        close(fd).expect("close failed");
-    }
 
     // If we ran out of sockets, try to resume accepting.
     server.accepting = 1;
