@@ -27,13 +27,6 @@ static const char
 # define HAVE_INET6
 #endif
 
-#ifndef DEBUG
-# define NDEBUG
-static const int debug = 0;
-#else
-static const int debug = 1;
-#endif
-
 #ifdef __linux
 # define _GNU_SOURCE /* for strsignal() and vasprintf() */
 # define _FILE_OFFSET_BITS 64 /* stat() files bigger than 2GB */
@@ -822,137 +815,7 @@ extern void process_request(const struct server *srv, struct connection *conn);
 /* Main loop of the httpd - a select() and then delegation to accept
  * connections, handle receiving of requests, and sending of replies.
  */
-static void httpd_poll(void) {
-    fd_set recv_set, send_set;
-    int max_fd, select_ret;
-    int bother_with_timeout = 0;
-    struct timeval timeout, t0, t1;
-
-    timeout.tv_sec = srv.timeout_secs;
-    timeout.tv_usec = 0;
-
-    FD_ZERO(&recv_set);
-    FD_ZERO(&send_set);
-    max_fd = 0;
-
-    /* set recv/send fd_sets */
-#define MAX_FD_SET(sock, fdset) do { FD_SET(sock,fdset); \
-                                max_fd = (max_fd<sock) ? sock : max_fd; } \
-                                while (0)
-    if (srv.accepting) MAX_FD_SET(srv.sockin, &recv_set);
-
-    int i = 0;
-    while (connection_exists(&srv, i)) {
-        struct connection *conn = get_connection(&srv, i);
-
-        switch (conn->state) {
-        case DONE:
-            /* do nothing */
-            break;
-
-        case RECV_REQUEST:
-            MAX_FD_SET(conn->socket, &recv_set);
-            bother_with_timeout = 1;
-            break;
-
-        case SEND_HEADER:
-        case SEND_REPLY:
-            MAX_FD_SET(conn->socket, &send_set);
-            bother_with_timeout = 1;
-            break;
-        }
-
-        i++;
-    }
-#undef MAX_FD_SET
-
-#if defined(__has_feature)
-# if __has_feature(memory_sanitizer)
-    __msan_unpoison(&recv_set, sizeof(recv_set));
-    __msan_unpoison(&send_set, sizeof(send_set));
-# endif
-#endif
-
-    /* -select- */
-    if (debug) {
-        printf("select() with max_fd %d timeout %d\n",
-                max_fd, bother_with_timeout ? (int)timeout.tv_sec : 0);
-        gettimeofday(&t0, NULL);
-    }
-    select_ret = select(max_fd + 1, &recv_set, &send_set, NULL,
-        (bother_with_timeout) ? &timeout : NULL);
-    if (select_ret == 0) {
-        if (!bother_with_timeout)
-            errx(1, "select() timed out");
-    }
-    if (select_ret == -1) {
-        if (errno == EINTR)
-            return; /* interrupted by signal */
-        else
-            err(1, "select() failed");
-    }
-    if (debug) {
-        long long sec, usec;
-        gettimeofday(&t1, NULL);
-        sec = t1.tv_sec - t0.tv_sec;
-        usec = t1.tv_usec - t0.tv_usec;
-        if (usec < 0) {
-            usec += 1000000;
-            sec--;
-        }
-        printf("select() returned %d after %lld.%06lld secs\n",
-                select_ret, sec, usec);
-    }
-
-    /* update time */
-    srv.now = time(NULL);
-
-    /* poll connections that select() says need attention */
-    if (FD_ISSET(srv.sockin, &recv_set))
-        accept_connection(&srv);
-
-    i = 0;
-    while (connection_exists(&srv, i)) {
-        struct connection *conn = get_connection(&srv, i);
-
-        poll_check_timeout(&srv, conn);
-        switch (conn->state) {
-        case RECV_REQUEST:
-            if (FD_ISSET(conn->socket, &recv_set)) poll_recv_request(&srv, conn);
-            break;
-
-        case SEND_HEADER:
-            if (FD_ISSET(conn->socket, &send_set)) poll_send_header(&srv, conn);
-            break;
-
-        case SEND_REPLY:
-            if (FD_ISSET(conn->socket, &send_set)) poll_send_reply(&srv, conn);
-            break;
-
-        case DONE:
-            /* (handled later; ignore for now as it's a valid state) */
-            break;
-        }
-
-        /* Handling SEND_REPLY could have set the state to done. */
-        if (conn->state == DONE) {
-            /* clean out finished connection */
-            if (conn->conn_close) {
-                free_connection(&srv, conn); // logs connection and drops fields
-                remove_connection(&srv, i);  // drops connection
-            } else {
-                recycle_connection(&srv, conn);
-                /* and go right back to recv_request without going through
-                 * select() again.
-                 */
-                poll_recv_request(&srv, conn);
-                i++;
-            }
-        } else {
-            i++;
-        }
-    }
-}
+extern void httpd_poll(struct server *srv);
 
 /* Daemonize helpers. */
 #define PATH_DEVNULL "/dev/null"
@@ -1166,7 +1029,7 @@ int main(int argc, char **argv) {
     if (srv.want_daemon) daemonize_finish();
 
     /* main loop */
-    while (srv.running) httpd_poll();
+    while (srv.running) httpd_poll(&srv);
 
     /* clean exit */
     xclose(srv.sockin);

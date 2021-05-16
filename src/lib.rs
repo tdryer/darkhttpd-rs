@@ -13,8 +13,10 @@ use std::slice;
 
 use chrono::{Local, TimeZone, Utc};
 use nix::errno::Errno;
+use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
+use nix::sys::time::TimeVal;
 use nix::unistd::close;
 
 mod bindings;
@@ -1625,6 +1627,121 @@ pub extern "C" fn accept_connection(server: *mut Server) {
 
     // Try to read straight away rather than going through another iteration of the select() loop.
     poll_recv_request(server, &mut connections[num_connections - 1]);
+}
+
+/// Main loop of the httpd - a select() and then delegation to accept connections, handle receiving
+/// of requests, and sending of replies.
+#[no_mangle]
+pub extern "C" fn httpd_poll(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    let mut recv_set = FdSet::new();
+    let mut send_set = FdSet::new();
+    let mut timeout_required = false;
+
+    if server.accepting == 1 {
+        recv_set.insert(server.sockin);
+    }
+
+    let connections = unsafe {
+        (server.connections as *mut Vec<Connection>)
+            .as_mut()
+            .expect("connections pointer is null")
+    };
+    for conn in connections.iter() {
+        match conn.state {
+            bindings::connection_DONE => {}
+            bindings::connection_RECV_REQUEST => {
+                recv_set.insert(conn.socket);
+                timeout_required = true;
+            }
+            bindings::connection_SEND_HEADER | bindings::connection_SEND_REPLY => {
+                send_set.insert(conn.socket);
+                timeout_required = true;
+            }
+            _ => panic!("Invalid connection state"),
+        }
+    }
+
+    let mut timeout = Some(TimeVal::from(libc::timeval {
+        tv_sec: server.timeout_secs as libc::time_t,
+        tv_usec: 0,
+    }))
+    .filter(|_| timeout_required);
+
+    match select(
+        None,
+        Some(&mut recv_set),
+        Some(&mut send_set),
+        None,
+        timeout.as_mut(),
+    ) {
+        Ok(0) => {
+            if !timeout_required {
+                panic!("select() timed out");
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            if e.as_errno() == Some(Errno::EINTR) {
+                return; // interrupted by signal
+            } else {
+                panic!("select() failed: {}", e)
+            }
+        }
+    }
+
+    // update time
+    server.now = Utc::now().timestamp();
+
+    // poll connections that select() says need attention
+    if recv_set.contains(server.sockin) {
+        accept_connection(server);
+    }
+    let mut index = 0;
+    while index < connections.len() {
+        let conn = &mut connections[index];
+
+        poll_check_timeout(server, conn);
+
+        match conn.state {
+            bindings::connection_RECV_REQUEST => {
+                if recv_set.contains(conn.socket) {
+                    poll_recv_request(server, conn);
+                }
+            }
+            bindings::connection_SEND_HEADER => {
+                if send_set.contains(conn.socket) {
+                    poll_send_header(server, conn);
+                }
+            }
+            bindings::connection_SEND_REPLY => {
+                if send_set.contains(conn.socket) {
+                    poll_send_reply(server, conn);
+                }
+            }
+            bindings::connection_DONE => {
+                // (handled later; ignore for now as it's a valid state)
+            }
+            _ => panic!("Invalid connection state"),
+        };
+
+        // Handling SEND_REPLY could have set the state to done.
+        if conn.state == bindings::connection_DONE {
+            // clean out finished connection
+            if conn.conn_close == 1 {
+                free_connection(server, conn); // logs connection and drops fields
+                remove_connection(server, index as libc::c_int); // drops connection
+            } else {
+                recycle_connection(server, conn);
+                // and go right back to recv_request without going through select() again.
+                poll_recv_request(server, conn);
+                index += 1;
+            }
+        } else {
+            index += 1;
+        }
+    }
 }
 
 #[cfg(test)]
