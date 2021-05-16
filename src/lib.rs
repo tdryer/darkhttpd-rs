@@ -34,7 +34,7 @@ macro_rules! abort {
 
 // TODO: Oxidize types
 struct Connection {
-    socket: RawFd,
+    socket: Option<RawFd>,
     client: IpAddr,
     last_active: libc::time_t,
     state: ConnectionState,
@@ -55,7 +55,7 @@ struct Connection {
     conn_close: bool,
     reply_type: ConnectionReplyType,
     reply: Option<String>,
-    reply_fd: ::std::os::raw::c_int,
+    reply_fd: Option<RawFd>,
     reply_start: libc::off_t,
     reply_length: libc::off_t,
     reply_sent: libc::off_t,
@@ -888,7 +888,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         return;
     }
 
-    conn.reply_fd = file.into_raw_fd();
+    conn.reply_fd = Some(file.into_raw_fd());
     conn.reply_type = ConnectionReplyType::FromFile;
     let lastmod = metadata
         .modified()
@@ -1092,11 +1092,11 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
         let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
         let buf = &conn.reply.as_ref().unwrap().as_bytes()
             [start..start + usize::try_from(send_len).unwrap()];
-        sent = socket::send(conn.socket, buf, socket::MsgFlags::empty());
+        sent = socket::send(conn.socket.unwrap(), buf, socket::MsgFlags::empty());
     } else {
         sent = send_from_file(
-            conn.socket,
-            conn.reply_fd,
+            conn.socket.unwrap(),
+            conn.reply_fd.unwrap(),
             conn.reply_start + conn.reply_sent,
             send_len.try_into().unwrap(),
         );
@@ -1134,7 +1134,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     conn.last_active = server.now;
 
     let sent = match socket::send(
-        conn.socket,
+        conn.socket.unwrap(),
         &header[conn.header_sent as usize..header.len() - conn.header_sent as usize],
         socket::MsgFlags::empty(),
     ) {
@@ -1178,7 +1178,7 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
     let recvd = bindings::size_t::try_from(
-        match socket::recv(conn.socket, &mut buf, socket::MsgFlags::empty()) {
+        match socket::recv(conn.socket.unwrap(), &mut buf, socket::MsgFlags::empty()) {
             Ok(recvd) if recvd > 0 => recvd,
             Err(nix::Error::Sys(Errno::EAGAIN)) => {
                 // would block
@@ -1289,11 +1289,11 @@ fn log_connection(server: &Server, conn: &Connection) {
 fn free_connection(server: &mut Server, conn: &mut Connection) {
     log_connection(server, conn);
 
-    if conn.socket != -1 {
-        close(conn.socket).expect("close failed");
+    if let Some(fd) = conn.socket {
+        close(fd).expect("close failed");
     }
-    if conn.reply_fd != -1 {
-        close(conn.reply_fd).expect("close failed");
+    if let Some(fd) = conn.reply_fd {
+        close(fd).expect("close failed");
     }
     // If we ran out of sockets, try to resume accepting.
     server.accepting = 1;
@@ -1302,7 +1302,7 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
 /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
 fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     let socket_tmp = conn.socket;
-    conn.socket = -1; // so free_connection() doesn't close it
+    conn.socket = None; // so free_connection() doesn't close it
     free_connection(server, conn);
     conn.socket = socket_tmp;
 
@@ -1323,7 +1323,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.http_code = 0;
     conn.conn_close = true;
     conn.reply = None;
-    conn.reply_fd = -1;
+    conn.reply_fd = None;
     conn.reply_start = 0;
     conn.reply_length = 0;
     conn.reply_sent = 0;
@@ -1335,7 +1335,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
 /// Allocate and initialize an empty connection.
 fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection {
     Connection {
-        socket,
+        socket: Some(socket),
         client,
         last_active: server.now,
         state: ConnectionState::ReceiveRequest,
@@ -1356,7 +1356,7 @@ fn new_connection(server: &Server, socket: RawFd, client: IpAddr) -> Connection 
         conn_close: true,
         reply_type: ConnectionReplyType::Generated,
         reply: None,
-        reply_fd: -1,
+        reply_fd: None,
         reply_start: 0,
         reply_length: 0,
         reply_sent: 0,
@@ -1484,11 +1484,11 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
         match conn.state {
             ConnectionState::Done => {}
             ConnectionState::ReceiveRequest => {
-                recv_set.insert(conn.socket);
+                recv_set.insert(conn.socket.unwrap());
                 timeout_required = true;
             }
             ConnectionState::SendHeader | ConnectionState::SendReply => {
-                send_set.insert(conn.socket);
+                send_set.insert(conn.socket.unwrap());
                 timeout_required = true;
             }
         }
@@ -1537,17 +1537,17 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
 
         match conn.state {
             ConnectionState::ReceiveRequest => {
-                if recv_set.contains(conn.socket) {
+                if recv_set.contains(conn.socket.unwrap()) {
                     poll_recv_request(server, conn);
                 }
             }
             ConnectionState::SendHeader => {
-                if send_set.contains(conn.socket) {
+                if send_set.contains(conn.socket.unwrap()) {
                     poll_send_header(server, conn);
                 }
             }
             ConnectionState::SendReply => {
-                if send_set.contains(conn.socket) {
+                if send_set.contains(conn.socket.unwrap()) {
                     poll_send_reply(server, conn);
                 }
             }
