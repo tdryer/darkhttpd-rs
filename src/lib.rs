@@ -48,9 +48,9 @@ struct Connection {
     range_begin_given: libc::off_t,
     range_end_given: libc::off_t,
     header: Option<String>,
-    header_sent: bindings::size_t,
+    header_sent: usize,
     header_only: bool,
-    http_code: ::std::os::raw::c_int,
+    http_code: u16,
     conn_close: bool,
     reply_type: ConnectionReplyType,
     reply: Option<String>,
@@ -493,7 +493,7 @@ fn parse_offset(data: &[u8]) -> (Option<libc::off_t>, &[u8]) {
 fn default_reply(
     server: &Server,
     conn: &mut Connection,
-    errcode: i32,
+    errcode: u16,
     errname: &str,
     reason: &str,
 ) {
@@ -1138,7 +1138,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
 
     let sent = match socket::send(
         conn.socket.as_ref().unwrap().as_raw_fd(),
-        &header[conn.header_sent as usize..header.len() - conn.header_sent as usize],
+        &header[conn.header_sent..header.len() - conn.header_sent],
         socket::MsgFlags::empty(),
     ) {
         Ok(sent) if sent > 0 => sent,
@@ -1155,12 +1155,12 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     };
 
     assert!(sent > 0);
-    conn.header_sent += bindings::size_t::try_from(sent).unwrap();
+    conn.header_sent += sent;
     conn.total_sent += libc::off_t::try_from(sent).unwrap();
     server.total_out += u64::try_from(sent).unwrap();
 
     // check if we're done sending header
-    if conn.header_sent == header.len() as u64 {
+    if conn.header_sent == header.len() {
         if conn.header_only {
             conn.state = ConnectionState::Done;
         } else {
