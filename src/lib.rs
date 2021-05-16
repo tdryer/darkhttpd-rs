@@ -21,7 +21,7 @@ use nix::unistd::close;
 
 mod bindings;
 
-use bindings::{connection as Connection, server as Server};
+use bindings::server as Server;
 
 /// Prints message to standard error and exits with code 1.
 macro_rules! abort {
@@ -30,6 +30,57 @@ macro_rules! abort {
         eprintln!($($arg)*);
         std::process::exit(1);
     })
+}
+
+// TODO: Remove `pub`
+// TODO: Oxidize types
+pub struct Connection {
+    socket: ::std::os::raw::c_int,
+    client: In6Addr,
+    last_active: libc::time_t,
+    state: ::std::os::raw::c_uint,
+    request: *mut ::std::os::raw::c_char,
+    request_length: bindings::size_t,
+    method: *mut ::std::os::raw::c_char,
+    url: *mut ::std::os::raw::c_char,
+    referer: *mut ::std::os::raw::c_char,
+    user_agent: *mut ::std::os::raw::c_char,
+    authorization: *mut ::std::os::raw::c_char,
+    range_begin: libc::off_t,
+    range_end: libc::off_t,
+    range_begin_given: libc::off_t,
+    range_end_given: libc::off_t,
+    header: *mut ::std::os::raw::c_char,
+    header_length: bindings::size_t,
+    header_sent: bindings::size_t,
+    header_dont_free: ::std::os::raw::c_int,
+    header_only: ::std::os::raw::c_int,
+    http_code: ::std::os::raw::c_int,
+    conn_close: ::std::os::raw::c_int,
+    reply_type: ::std::os::raw::c_uint,
+    reply: *mut ::std::os::raw::c_char,
+    reply_dont_free: ::std::os::raw::c_int,
+    reply_fd: ::std::os::raw::c_int,
+    reply_start: libc::off_t,
+    reply_length: libc::off_t,
+    reply_sent: libc::off_t,
+    total_sent: libc::off_t,
+}
+const CONNECTION_RECV_REQUEST: ::std::os::raw::c_uint = 0;
+const CONNECTION_SEND_HEADER: ::std::os::raw::c_uint = 1;
+const CONNECTION_SEND_REPLY: ::std::os::raw::c_uint = 2;
+const CONNECTION_DONE: ::std::os::raw::c_uint = 3;
+const CONNECTION_REPLY_GENERATED: ::std::os::raw::c_uint = 0;
+const CONNECTION_REPLY_FROMFILE: ::std::os::raw::c_uint = 1;
+#[derive(Copy, Clone)]
+struct In6Addr {
+    __in6_u: In6AddrUnion,
+}
+#[derive(Copy, Clone)]
+union In6AddrUnion {
+    __u6_addr8: [u8; 16usize],
+    __u6_addr16: [u16; 8usize],
+    __u6_addr32: [u32; 4usize],
 }
 
 // TODO: Include this as a file.
@@ -502,7 +553,7 @@ fn default_reply(
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-    conn.reply_type = bindings::connection_REPLY_GENERATED;
+    conn.reply_type = CONNECTION_REPLY_GENERATED;
     conn.http_code = errcode;
     conn.reply_start = 0; // Reset in case the request set a range.
 }
@@ -545,7 +596,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-    conn.reply_type = bindings::connection_REPLY_GENERATED;
+    conn.reply_type = CONNECTION_REPLY_GENERATED;
     conn.http_code = 301;
 }
 
@@ -643,7 +694,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
     let headers = CString::new(headers).unwrap();
     conn.header_length = headers.as_bytes().len() as bindings::size_t;
     conn.header = headers.into_raw();
-    conn.reply_type = bindings::connection_REPLY_GENERATED;
+    conn.reply_type = CONNECTION_REPLY_GENERATED;
     conn.http_code = 200;
 }
 
@@ -859,7 +910,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
     }
 
     conn.reply_fd = file.into_raw_fd();
-    conn.reply_type = bindings::connection_REPLY_FROMFILE;
+    conn.reply_type = CONNECTION_REPLY_FROMFILE;
     let lastmod = metadata
         .modified()
         .unwrap()
@@ -1047,7 +1098,7 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     }
 
     // advance state
-    conn.state = bindings::connection_SEND_HEADER;
+    conn.state = CONNECTION_SEND_HEADER;
 
     /* request not needed anymore */
     unsafe { libc::free(conn.request as *mut libc::c_void) };
@@ -1071,7 +1122,7 @@ fn send_from_file(
 
 /// Sending reply.
 fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
-    assert!(conn.state == bindings::connection_SEND_REPLY);
+    assert!(conn.state == CONNECTION_SEND_REPLY);
     assert!(conn.header_only == 0);
     assert!(conn.reply_length >= conn.reply_sent);
 
@@ -1079,7 +1130,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
 
     let sent;
-    if conn.reply_type == bindings::connection_REPLY_GENERATED {
+    if conn.reply_type == CONNECTION_REPLY_GENERATED {
         assert!(!conn.reply.is_null());
         // TODO: Clean up type casts
         let reply = unsafe {
@@ -1109,7 +1160,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
         _ => {
             // closure or other error
             conn.conn_close = 1;
-            conn.state = bindings::connection_DONE;
+            conn.state = CONNECTION_DONE;
             return;
         }
     };
@@ -1119,13 +1170,13 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
 
     // check if we're done sending
     if conn.reply_sent == conn.reply_length {
-        conn.state = bindings::connection_DONE;
+        conn.state = CONNECTION_DONE;
     }
 }
 
 /// Sending header. Assumes conn->header is not NULL.
 fn poll_send_header(server: &mut Server, conn: &mut Connection) {
-    assert_eq!(conn.state, bindings::connection_SEND_HEADER);
+    assert_eq!(conn.state, CONNECTION_SEND_HEADER);
 
     assert!(!conn.header.is_null());
     let header = unsafe { CStr::from_ptr(conn.header) };
@@ -1147,7 +1198,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
         _ => {
             // closure or other error
             conn.conn_close = 1;
-            conn.state = bindings::connection_DONE;
+            conn.state = CONNECTION_DONE;
             return;
         }
     };
@@ -1160,9 +1211,9 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     // check if we're done sending header
     if conn.header_sent == conn.header_length {
         if conn.header_only == 1 {
-            conn.state = bindings::connection_DONE;
+            conn.state = CONNECTION_DONE;
         } else {
-            conn.state = bindings::connection_SEND_REPLY;
+            conn.state = CONNECTION_SEND_REPLY;
             // go straight on to body, don't go through another iteration of the select() loop
             poll_send_reply(server, conn);
         }
@@ -1175,7 +1226,7 @@ const MAX_REQUEST_LENGTH: u64 = 4000;
 
 /// Receiving request.
 fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
-    assert_eq!(conn.state, bindings::connection_RECV_REQUEST);
+    assert_eq!(conn.state, CONNECTION_RECV_REQUEST);
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
     let recvd = bindings::size_t::try_from(
@@ -1188,7 +1239,7 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
             _ => {
                 // closure or other error
                 conn.conn_close = 1;
-                conn.state = bindings::connection_DONE;
+                conn.state = CONNECTION_DONE;
                 return;
             }
         },
@@ -1226,12 +1277,12 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
     if conn.request_length > MAX_REQUEST_LENGTH {
         let reason = "Your request was dropped because it was too long.";
         default_reply(server, conn, 413, "Request Entity Too Large", reason);
-        conn.state = bindings::connection_SEND_HEADER;
+        conn.state = CONNECTION_SEND_HEADER;
     }
 
     // if we've moved on to the next state, try to send right away, instead of going through
     // another iteration of the select() loop.
-    if conn.state == bindings::connection_SEND_HEADER {
+    if conn.state == CONNECTION_SEND_HEADER {
         poll_send_header(server, conn);
     }
 }
@@ -1398,22 +1449,22 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.reply_sent = 0;
     conn.total_sent = 0;
 
-    conn.state = bindings::connection_RECV_REQUEST; // ready for another
+    conn.state = CONNECTION_RECV_REQUEST; // ready for another
 }
 
 /// Allocate and initialize an empty connection.
 fn new_connection(server: &Server) -> Connection {
     Connection {
         socket: -1,
-        client: bindings::in6_addr {
-            __in6_u: bindings::in6_addr__bindgen_ty_1 {
+        client: In6Addr {
+            __in6_u: In6AddrUnion {
                 __u6_addr8: [0; 16],
             },
         },
         last_active: server.now,
         // Make it harmless so it gets garbage-collected if it should, for some reason, fail to be
         // correctly filled out.
-        state: bindings::connection_DONE,
+        state: CONNECTION_DONE,
         request: null_mut(),
         request_length: 0,
         method: null_mut(),
@@ -1432,7 +1483,7 @@ fn new_connection(server: &Server) -> Connection {
         header_only: 0,
         http_code: 0,
         conn_close: 1,
-        reply_type: bindings::connection_RECV_REQUEST,
+        reply_type: CONNECTION_RECV_REQUEST,
         reply: null_mut(),
         reply_dont_free: 0, // TODO: remove unused?
         reply_fd: -1,
@@ -1512,7 +1563,7 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection) {
     if server.timeout_secs > 0 {
         if server.now - conn.last_active >= server.timeout_secs as i64 {
             conn.conn_close = 1;
-            conn.state = bindings::connection_DONE;
+            conn.state = CONNECTION_DONE;
         }
     }
 }
@@ -1554,7 +1605,7 @@ fn accept_connection(server: &mut Server) {
     let mut conn = new_connection(server);
     conn.socket = fd;
     nonblock_socket(conn.socket);
-    conn.state = bindings::connection_RECV_REQUEST;
+    conn.state = CONNECTION_RECV_REQUEST;
 
     // Set connection client address.
     match addr {
@@ -1601,12 +1652,12 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
     };
     for conn in connections.iter() {
         match conn.state {
-            bindings::connection_DONE => {}
-            bindings::connection_RECV_REQUEST => {
+            CONNECTION_DONE => {}
+            CONNECTION_RECV_REQUEST => {
                 recv_set.insert(conn.socket);
                 timeout_required = true;
             }
-            bindings::connection_SEND_HEADER | bindings::connection_SEND_REPLY => {
+            CONNECTION_SEND_HEADER | CONNECTION_SEND_REPLY => {
                 send_set.insert(conn.socket);
                 timeout_required = true;
             }
@@ -1656,29 +1707,29 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
         poll_check_timeout(server, conn);
 
         match conn.state {
-            bindings::connection_RECV_REQUEST => {
+            CONNECTION_RECV_REQUEST => {
                 if recv_set.contains(conn.socket) {
                     poll_recv_request(server, conn);
                 }
             }
-            bindings::connection_SEND_HEADER => {
+            CONNECTION_SEND_HEADER => {
                 if send_set.contains(conn.socket) {
                     poll_send_header(server, conn);
                 }
             }
-            bindings::connection_SEND_REPLY => {
+            CONNECTION_SEND_REPLY => {
                 if send_set.contains(conn.socket) {
                     poll_send_reply(server, conn);
                 }
             }
-            bindings::connection_DONE => {
+            CONNECTION_DONE => {
                 // (handled later; ignore for now as it's a valid state)
             }
             _ => panic!("Invalid connection state"),
         };
 
         // Handling SEND_REPLY could have set the state to done.
-        if conn.state == bindings::connection_DONE {
+        if conn.state == CONNECTION_DONE {
             // clean out finished connection
             if conn.conn_close == 1 {
                 free_connection(server, conn); // logs connection and drops fields

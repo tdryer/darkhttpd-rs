@@ -160,41 +160,7 @@ static void warn(const char *format, ...) {
 }
 #endif
 
-struct connection {
-    int socket;
-#ifdef HAVE_INET6
-    struct in6_addr client;
-#else
-    in_addr_t client;
-#endif
-    time_t last_active;
-    enum {
-        RECV_REQUEST,   /* receiving request */
-        SEND_HEADER,    /* sending generated header */
-        SEND_REPLY,     /* sending reply */
-        DONE            /* connection closed, need to remove from queue */
-    } state;
-
-    /* char request[request_length+1] is null-terminated */
-    char *request;
-    size_t request_length;
-
-    /* request fields */
-    char *method, *url, *referer, *user_agent, *authorization;
-    off_t range_begin, range_end;
-    off_t range_begin_given, range_end_given;
-
-    char *header;
-    size_t header_length, header_sent;
-    int header_dont_free, header_only, http_code, conn_close;
-
-    enum { REPLY_GENERATED, REPLY_FROMFILE } reply_type;
-    char *reply;
-    int reply_dont_free;
-    int reply_fd;
-    off_t reply_start, reply_length, reply_sent,
-          total_sent; /* header + body = total, for logging */
-};
+struct connection; /* defined by Rust */
 
 struct forward_mapping {
     const char *host, *target_url; /* These point at argv. */
