@@ -909,8 +909,6 @@ int main(int argc, char **argv) {
 
     /* free the mallocs */
     {
-        if (srv.forward_map)
-            free(srv.forward_map);
         free(srv.wwwroot);
         free(srv.server_hdr);
         free(srv.auth_key);
