@@ -30,6 +30,50 @@ macro_rules! abort {
     })
 }
 
+const BASE64_TABLE: &[char] = &[
+    'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+    'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l',
+    'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4',
+    '5', '6', '7', '8', '9', '+', '/',
+];
+
+/// Encode data as base64.
+struct Base64Encoded<'a>(&'a [u8]);
+
+impl<'a> std::fmt::Display for Base64Encoded<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for chunk in self.0.chunks(3) {
+            let mut triple: u32 = 0;
+            for i in 0..3 {
+                triple <<= 8;
+                triple += *chunk.get(i).unwrap_or(&0) as u32;
+            }
+            for i in (0..4).rev().take(chunk.len() + 1) {
+                write!(f, "{}", BASE64_TABLE[(triple as usize >> i * 6) & 0x3F])?;
+            }
+            for _ in 0..(3 - chunk.len()) {
+                write!(f, "=")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn base64_encode(s: *const libc::c_char) -> *mut libc::c_char {
+    assert!(!s.is_null());
+    let input = unsafe { CStr::from_ptr(s) }.to_str().unwrap();
+    let output = Base64Encoded(input.as_bytes()).to_string();
+    // freed by `free_base64_encode`
+    CString::new(output).unwrap().into_raw()
+}
+
+#[no_mangle]
+pub extern "C" fn free_base64_encode(s: *mut libc::c_char) {
+    assert!(!s.is_null());
+    unsafe { CString::from_raw(s) };
+}
+
 // TODO: Oxidize types
 struct Connection {
     socket: Option<TcpStream>,
@@ -1600,6 +1644,17 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    use test_case::test_case;
+
+    #[test_case(b"", "" ; "zero bytes")]
+    #[test_case(b"M", "TQ==" ; "one byte")]
+    #[test_case(b"Ma", "TWE=" ; "two bytes")]
+    #[test_case(b"Man", "TWFu" ; "three bytes")]
+    #[test_case(b"hello world", "aGVsbG8gd29ybGQ=" ; "many bytes")]
+    fn base_64_encoded_works(data: &[u8], output: &str) {
+        assert_eq!(Base64Encoded(data).to_string(), output);
+    }
 
     #[test]
     fn url_encoded_works() {
