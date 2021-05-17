@@ -9,7 +9,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::ptr::null_mut;
-use std::slice;
 
 use chrono::{Local, TimeZone, Utc};
 use nix::errno::Errno;
@@ -73,6 +72,47 @@ enum ConnectionState {
 enum ConnectionReplyType {
     Generated,
     FromFile,
+}
+
+type ForwardMap = HashMap<String, String>;
+
+#[no_mangle]
+pub extern "C" fn init_forward_map(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    assert!(server.forward_map.is_null());
+    // freed by `free_forward_map`
+    server.forward_map = Box::into_raw(Box::new(ForwardMap::new())) as *mut libc::c_void;
+}
+
+#[no_mangle]
+pub extern "C" fn free_forward_map(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    assert!(!server.forward_map.is_null());
+    unsafe { Box::from_raw(server.forward_map as *mut ForwardMap) };
+    server.forward_map = null_mut();
+}
+
+#[no_mangle]
+pub extern "C" fn add_forward_mapping(
+    server: *mut Server,
+    host: *const libc::c_char,
+    target_url: *const libc::c_char,
+) {
+    let server = unsafe { server.as_mut().unwrap() };
+    let forward_map = unsafe {
+        (server.forward_map as *mut ForwardMap)
+            .as_mut()
+            .expect("forward_map pointer is null")
+    };
+    let host = unsafe { CStr::from_ptr(host) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    let target_url = unsafe { CStr::from_ptr(target_url) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    forward_map.insert(host, target_url);
 }
 
 // TODO: Include this as a file.
@@ -708,35 +748,26 @@ fn not_modified(server: &Server, conn: &mut Connection) {
 }
 
 /// Get URL to forward to based on host header, if any.
-fn get_forward_to_url(server: &Server, conn: &mut Connection) -> Option<&'static str> {
-    let mut forward_to_url = None;
-    if !server.forward_map.is_null() {
-        if let Some(host) = parse_field(conn, "Host: ") {
-            let forward_mappings = unsafe {
-                slice::from_raw_parts(server.forward_map, server.forward_map_size as usize)
-            };
-            for forward_mapping in forward_mappings {
-                let mapping_host = unsafe { CStr::from_ptr(forward_mapping.host) }
-                    .to_str()
-                    .unwrap();
-                let mapping_target = unsafe { CStr::from_ptr(forward_mapping.target_url) }
-                    .to_str()
-                    .unwrap();
-                if host == mapping_host {
-                    forward_to_url = Some(mapping_target);
-                    break;
-                }
-            }
+fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&'a str> {
+    let forward_map = unsafe {
+        (server.forward_map as *mut ForwardMap)
+            .as_mut()
+            .expect("forward_map pointer is null")
+    };
+    if !forward_map.is_empty() {
+        let host = parse_field(conn, "Host: ");
+        if let Some(target) = host.and_then(move |host| forward_map.get(&host)) {
+            return Some(target);
         }
     }
-    if forward_to_url.is_none() && !server.forward_all_url.is_null() {
-        forward_to_url = Some(
+    if !server.forward_all_url.is_null() {
+        return Some(
             unsafe { CStr::from_ptr(server.forward_all_url) }
                 .to_str()
                 .unwrap(),
         );
     }
-    forward_to_url
+    None
 }
 
 /// Return range based on header values and file length.

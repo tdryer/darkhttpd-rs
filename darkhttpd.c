@@ -162,10 +162,6 @@ static void warn(const char *format, ...) {
 
 struct connection; /* defined by Rust */
 
-struct forward_mapping {
-    const char *host, *target_url; /* These point at argv. */
-};
-
 static const char octet_stream[] = "application/octet-stream";
 
 /* Container for mutable static variables. */
@@ -173,8 +169,7 @@ struct server {
     const char *pkgname;
     const char *copyright;
     void *connections;          /* used by Rust */
-    struct forward_mapping *forward_map;
-    size_t forward_map_size;
+    void *forward_map;          /* used by Rust */
     const char *forward_all_url;
     /* If a connection is idle for timeout_secs or more, it gets closed and
      * removed from the connlist.
@@ -218,7 +213,6 @@ static struct server srv = {
     .pkgname = pkgname,
     .copyright = copyright,
     .forward_map = NULL,
-    .forward_map_size = 0,
     .forward_all_url = NULL,
     .timeout_secs = 30,
     .bindaddr = NULL,
@@ -267,14 +261,6 @@ static void xclose(const int fd) {
 /* malloc that dies if it can't allocate. */
 extern void *xmalloc(const size_t size);
 
-/* realloc() that dies if it can't reallocate. */
-static void *xrealloc(void *original, const size_t size) {
-    void *ptr = realloc(original, size);
-    if (ptr == NULL)
-        errx(1, "can't reallocate %zu bytes", size);
-    return ptr;
-}
-
 /* strdup() that dies if it can't allocate.
  * Implement this ourselves since regular strdup() isn't C89.
  */
@@ -318,14 +304,9 @@ static unsigned int xasprintf(char **ret, const char *format, ...) {
     return len;
 }
 
-static void add_forward_mapping(const char * const host,
-                                const char * const target_url) {
-    srv.forward_map_size++;
-    srv.forward_map = xrealloc(srv.forward_map,
-                           sizeof(*srv.forward_map) * srv.forward_map_size);
-    srv.forward_map[srv.forward_map_size - 1].host = host;
-    srv.forward_map[srv.forward_map_size - 1].target_url = target_url;
-}
+extern void init_forward_map(struct server *srv);
+extern void free_forward_map(struct server *srv);
+extern void add_forward_mapping(struct server *srv, const char *host, const char *target_url);
 
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.
@@ -705,7 +686,7 @@ static void parse_commandline(const int argc, char *argv[]) {
             if (++i >= argc)
                 errx(1, "missing url after --forward");
             url = argv[i];
-            add_forward_mapping(host, url);
+            add_forward_mapping(&srv, host, url);
         }
         else if (strcmp(argv[i], "--forward-all") == 0) {
             if (++i >= argc)
@@ -895,6 +876,7 @@ extern void free_keep_alive_field(struct server *srv);
 int main(int argc, char **argv) {
     printf("%s, %s.\n", srv.pkgname, srv.copyright);
     init_connections_list(&srv);
+    init_forward_map(&srv);
     parse_default_extension_map(&srv);
     parse_commandline(argc, argv);
     set_keep_alive_field(&srv);
@@ -969,6 +951,7 @@ int main(int argc, char **argv) {
         free(srv.wwwroot);
         free(srv.server_hdr);
         free(srv.auth_key);
+        free_forward_map(&srv);
         free_connections_list(&srv);
         free_mime_map(&srv);
         free_keep_alive_field(&srv);
