@@ -21,6 +21,111 @@ mod bindings;
 
 use bindings::server as Server;
 
+#[no_mangle]
+pub extern "C" fn usage(server: *const Server, argv0: *const libc::c_char) {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    assert!(!argv0.is_null());
+    let argv0 = unsafe { CStr::from_ptr(argv0) }.to_str().unwrap();
+    assert!(!server.index_name.is_null());
+    let index_name = unsafe { CStr::from_ptr(server.index_name) }.to_str().unwrap();
+
+    print!("usage:\t{} /path/to/wwwroot [flags]\n\n", argv0);
+    print!(
+        "flags:\t--port number (default: {}, or 80 if running as root)\n\
+        \t\tSpecifies which port to listen on for connections.\n\
+        \t\tPass 0 to let the system choose any free port for you.\n\n",
+        server.bindport
+    );
+    print!(
+        "\t--addr ip (default: all)\n\
+        \t\tIf multiple interfaces are present, specifies\n\
+        \t\twhich one to bind the listening port to.\n\n"
+    );
+    print!(
+        "\t--maxconn number (default: system maximum)\n\
+        \t\tSpecifies how many concurrent connections to accept.\n\n"
+    );
+    print!(
+        "\t--log filename (default: stdout)\n\
+        \t\tSpecifies which file to append the request log to.\n\n"
+    );
+    print!(
+        "\t--syslog\n\
+        \t\tUse syslog for request log.\n\n"
+    );
+    print!(
+        "\t--chroot (default: don't chroot)\n\
+        \t\tLocks server into wwwroot directory for added security.\n\n"
+    );
+    print!(
+        "\t--daemon (default: don't daemonize)\n\
+        \t\tDetach from the controlling terminal and run in the background.\n\n"
+    );
+    print!(
+        "\t--index filename (default: {})\n\
+        \t\tDefault file to serve when a directory is requested.\n\n",
+        index_name
+    );
+    print!(
+        "\t--no-listing\n\
+        \t\tDo not serve listing if directory is requested.\n\n"
+    );
+    print!(
+        "\t--mimetypes filename (optional)\n\
+        \t\tParses specified file for extension-MIME associations.\n\n"
+    );
+    print!(
+        "\t--default-mimetype string (optional, default: {})\n\
+        \t\tFiles with unknown extensions are served as this mimetype.\n\n",
+        DEFAULT_MIME_TYPE
+    );
+    print!(
+        "\t--uid uid/uname, --gid gid/gname (default: don't privdrop)\n\
+        \t\tDrops privileges to given uid:gid after initialization.\n\n"
+    );
+    print!(
+        "\t--pidfile filename (default: no pidfile)\n\
+        \t\tWrite PID to the specified file.  Note that if you are\n\
+        \t\tusing --chroot, then the pidfile must be relative to,\n\
+        \t\tand inside the wwwroot.\n\n"
+    );
+    print!(
+        "\t--no-keepalive\n\
+        \t\tDisables HTTP Keep-Alive functionality.\n\n"
+    );
+    print!(
+        "\t--forward host url (default: don't forward)\n\
+        \t\tWeb forward (301 redirect).\n\
+        \t\tRequests to the host are redirected to the corresponding url.\n\
+        \t\tThe option may be specified multiple times, in which case\n\
+        \t\tthe host is matched in order of appearance.\n\n"
+    );
+    print!(
+        "\t--forward-all url (default: don't forward)\n\
+        \t\tWeb forward (301 redirect).\n\
+        \t\tAll requests are redirected to the corresponding url.\n\n"
+    );
+    print!(
+        "\t--no-server-id\n\
+        \t\tDon't identify the server type in headers\n\
+        \t\tor directory listings.\n\n"
+    );
+    print!(
+        "\t--timeout secs (default: {})\n\
+        \t\tIf a connection is idle for more than this many seconds,\n\
+        \t\tit will be closed. Set to zero to disable timeouts.\n\n",
+        server.timeout_secs
+    );
+    print!(
+        "\t--auth username:password\n\
+        \t\tEnable basic authentication.\n\n"
+    );
+    print!(
+        "\t--ipv6\n\
+        \t\tListen on IPv6 address.\n\n"
+    );
+}
+
 /// Prints message to standard error and exits with code 1.
 macro_rules! abort {
     ($($arg:tt)*) => ({
@@ -188,12 +293,14 @@ struct MimeMap {
     default_mimetype: String,
 }
 
+const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
+
 impl MimeMap {
     /// Create MimeMap using the default extension map.
     fn parse_default_extension_map() -> MimeMap {
         let mut mime_map = MimeMap {
             mimetypes: HashMap::new(),
-            default_mimetype: "application/octet-stream".to_string(),
+            default_mimetype: DEFAULT_MIME_TYPE.to_string(),
         };
         for line in DEFAULT_EXTENSIONS_MAP {
             mime_map.add_mimetype_line(line);
