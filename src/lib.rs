@@ -4,7 +4,9 @@ use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::BufRead;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream};
+use std::net::{
+    AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
+};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
@@ -1710,15 +1712,31 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
     }
 }
 
-/// Initialize the sockin global. This is the socket that we accept connections from.
-#[no_mangle]
-pub extern "C" fn init_sockin(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> {
     let bindaddr = if server.bindaddr.is_null() {
         None
     } else {
         Some(unsafe { CStr::from_ptr(server.bindaddr) }.to_str().unwrap())
     };
+    Ok(if server.inet6 == 1 {
+        SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::from_str(bindaddr.unwrap_or("::"))?,
+            server.bindport,
+            0,
+            0,
+        ))
+    } else {
+        SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::from_str(bindaddr.unwrap_or("0.0.0.0"))?,
+            server.bindport,
+        ))
+    })
+}
+
+/// Initialize the sockin global. This is the socket that we accept connections from.
+#[no_mangle]
+pub extern "C" fn init_sockin(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
 
     let domain = match server.inet6 {
         0 => socket::AddressFamily::Inet,
@@ -1746,14 +1764,7 @@ pub extern "C" fn init_sockin(server: *mut Server) {
         );
     }
 
-    let socket_addr = if server.inet6 == 1 {
-        Ipv6Addr::from_str(bindaddr.unwrap_or("::"))
-            .map(|addr| SocketAddr::V6(SocketAddrV6::new(addr, server.bindport, 0, 0)))
-    } else {
-        Ipv4Addr::from_str(bindaddr.unwrap_or("0.0.0.0"))
-            .map(|addr| SocketAddr::V4(SocketAddrV4::new(addr, server.bindport)))
-    };
-    let socket_addr = match socket_addr {
+    let socket_addr = match listening_socket_addr(server) {
         Ok(socket_addr) => socket_addr,
         Err(_) => abort!("malformed --addr argument"),
     };
