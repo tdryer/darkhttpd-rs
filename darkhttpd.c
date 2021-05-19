@@ -318,124 +318,10 @@ extern void set_default_mimetype(struct server *srv, const char *mimetype);
  */
 extern void parse_extension_map_file(struct server *srv, const char *filename);
 
-static const char *get_address_text(const void *addr) {
-#ifdef HAVE_INET6
-    if (srv.inet6) {
-        static char text_addr[INET6_ADDRSTRLEN];
-        inet_ntop(AF_INET6, (const struct in6_addr *)addr, text_addr,
-                  INET6_ADDRSTRLEN);
-        return text_addr;
-    } else
-#endif
-    {
-        return inet_ntoa(*(const struct in_addr *)addr);
-    }
-}
-
 /* Initialize the sockin global.  This is the socket that we accept
  * connections from.
  */
-static void init_sockin(void) {
-    struct sockaddr_in addrin;
-#ifdef HAVE_INET6
-    struct sockaddr_in6 addrin6;
-#endif
-    socklen_t addrin_len;
-    int sockopt;
-
-#ifdef HAVE_INET6
-    if (srv.inet6) {
-        memset(&addrin6, 0, sizeof(addrin6));
-        if (inet_pton(AF_INET6, srv.bindaddr ? srv.bindaddr : "::",
-                      &addrin6.sin6_addr) == -1) {
-            errx(1, "malformed --addr argument");
-        }
-        srv.sockin = socket(PF_INET6, SOCK_STREAM, 0);
-    } else
-#endif
-    {
-        memset(&addrin, 0, sizeof(addrin));
-        addrin.sin_addr.s_addr = srv.bindaddr ? inet_addr(srv.bindaddr) : INADDR_ANY;
-        if (addrin.sin_addr.s_addr == (in_addr_t)INADDR_NONE)
-            errx(1, "malformed --addr argument");
-        srv.sockin = socket(PF_INET, SOCK_STREAM, 0);
-    }
-
-    if (srv.sockin == -1)
-        err(1, "socket()");
-
-    /* reuse address */
-    sockopt = 1;
-    if (setsockopt(srv.sockin, SOL_SOCKET, SO_REUSEADDR,
-                   &sockopt, sizeof(sockopt)) == -1)
-        err(1, "setsockopt(SO_REUSEADDR)");
-
-#if 0
-    /* disable Nagle since we buffer everything ourselves */
-    sockopt = 1;
-    if (setsockopt(srv.sockin, IPPROTO_TCP, TCP_NODELAY,
-            &sockopt, sizeof(sockopt)) == -1)
-        err(1, "setsockopt(TCP_NODELAY)");
-#endif
-
-#ifdef TORTURE
-    /* torture: cripple the kernel-side send buffer so we can only squeeze out
-     * one byte at a time (this is for debugging)
-     */
-    sockopt = 1;
-    if (setsockopt(srv.sockin, SOL_SOCKET, SO_SNDBUF,
-            &sockopt, sizeof(sockopt)) == -1)
-        err(1, "setsockopt(SO_SNDBUF)");
-#endif
-
-    /* bind socket */
-#ifdef HAVE_INET6
-    if (srv.inet6) {
-        addrin6.sin6_family = AF_INET6;
-        addrin6.sin6_port = htons(srv.bindport);
-        if (bind(srv.sockin, (struct sockaddr *)&addrin6,
-                 sizeof(struct sockaddr_in6)) == -1)
-            err(1, "bind(port %u)", srv.bindport);
-
-        addrin_len = sizeof(addrin6);
-        if (getsockname(srv.sockin, (struct sockaddr *)&addrin6, &addrin_len) == -1)
-            err(1, "getsockname()");
-        printf("listening on: http://[%s]:%u/\n",
-            get_address_text(&addrin6.sin6_addr), srv.bindport);
-    } else
-#endif
-    {
-        addrin.sin_family = (u_char)PF_INET;
-        addrin.sin_port = htons(srv.bindport);
-        if (bind(srv.sockin, (struct sockaddr *)&addrin,
-                 sizeof(struct sockaddr_in)) == -1)
-            err(1, "bind(port %u)", srv.bindport);
-        addrin_len = sizeof(addrin);
-        if (getsockname(srv.sockin, (struct sockaddr *)&addrin, &addrin_len) == -1)
-            err(1, "getsockname()");
-        printf("listening on: http://%s:%u/\n",
-            get_address_text(&addrin.sin_addr), srv.bindport);
-    }
-
-    /* listen on socket */
-    if (listen(srv.sockin, srv.max_connections) == -1)
-        err(1, "listen()");
-
-    /* enable acceptfilter (this is only available on FreeBSD) */
-    if (srv.want_accf) {
-#if defined(__FreeBSD__)
-        struct accept_filter_arg filt = {"httpready", ""};
-        if (setsockopt(srv.sockin, SOL_SOCKET, SO_ACCEPTFILTER,
-                       &filt, sizeof(filt)) == -1)
-            fprintf(stderr, "cannot enable acceptfilter: %s\n",
-                strerror(errno));
-        else
-            printf("enabled acceptfilter\n");
-#else
-        printf("this platform doesn't support acceptfilter\n");
-#endif
-    }
-}
+extern void init_sockin(struct server *srv);
 
 extern void usage(const struct server *srv, const char *argv0);
 
@@ -782,7 +668,7 @@ int main(int argc, char **argv) {
         xasprintf(&srv.server_hdr, "Server: %s\r\n", srv.pkgname);
     else
         srv.server_hdr = xstrdup("");
-    init_sockin();
+    init_sockin(&srv);
 
     /* open logfile */
     if (srv.logfile_name == NULL)

@@ -4,11 +4,12 @@ use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr};
 use std::fs::File;
 use std::io::BufRead;
-use std::net::{IpAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::ptr::null_mut;
+use std::str::FromStr;
 
 use chrono::{Local, TimeZone, Utc};
 use nix::errno::Errno;
@@ -1706,6 +1707,73 @@ pub extern "C" fn httpd_poll(server: *mut Server) {
         } else {
             index += 1;
         }
+    }
+}
+
+/// Initialize the sockin global. This is the socket that we accept connections from.
+#[no_mangle]
+pub extern "C" fn init_sockin(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    let bindaddr = if server.bindaddr.is_null() {
+        None
+    } else {
+        Some(unsafe { CStr::from_ptr(server.bindaddr) }.to_str().unwrap())
+    };
+
+    let domain = match server.inet6 {
+        0 => socket::AddressFamily::Inet,
+        _ => socket::AddressFamily::Inet6,
+    };
+
+    server.sockin = match socket::socket(
+        domain,
+        socket::SockType::Stream,
+        socket::SockFlag::empty(),
+        socket::SockProtocol::Tcp,
+    ) {
+        Ok(sockin) => sockin,
+        Err(e) => abort!(
+            "failed to create listening socket: {}",
+            e.as_errno().unwrap().desc()
+        ),
+    };
+
+    // reuse address
+    if let Err(e) = socket::setsockopt(server.sockin, socket::sockopt::ReuseAddr, &true) {
+        abort!(
+            "failed to set SO_REUSEADDR: {}",
+            e.as_errno().unwrap().desc()
+        );
+    }
+
+    let socket_addr = if server.inet6 == 1 {
+        Ipv6Addr::from_str(bindaddr.unwrap_or("::"))
+            .map(|addr| SocketAddr::V6(SocketAddrV6::new(addr, server.bindport, 0, 0)))
+    } else {
+        Ipv4Addr::from_str(bindaddr.unwrap_or("0.0.0.0"))
+            .map(|addr| SocketAddr::V4(SocketAddrV4::new(addr, server.bindport)))
+    };
+    let socket_addr = match socket_addr {
+        Ok(socket_addr) => socket_addr,
+        Err(_) => abort!("malformed --addr argument"),
+    };
+
+    if let Err(e) = socket::bind(
+        server.sockin,
+        &socket::SockAddr::Inet(socket::InetAddr::from_std(&socket_addr)),
+    ) {
+        abort!(
+            "failed to bind port {}: {}",
+            server.bindport,
+            e.as_errno().unwrap().desc()
+        );
+    }
+
+    println!("listening on: http://{}/", socket_addr);
+
+    // listen on socket
+    if let Err(e) = socket::listen(server.sockin, server.max_connections as usize) {
+        abort!("failed to listen socket: {}", e.as_errno().unwrap().desc());
     }
 }
 
