@@ -1,13 +1,12 @@
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
-use std::ffi::{CStr, CString, OsStr};
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::File;
 use std::io::BufRead;
 use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
 };
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::ptr::null_mut;
@@ -130,6 +129,13 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     // TODO: free this
     server.wwwroot = CString::new(wwwroot).unwrap().into_raw();
 
+    let forward_map = unsafe {
+        (server.forward_map as *mut ForwardMap)
+            .as_mut()
+            .expect("forward_map pointer is null")
+    };
+    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
+
     let args = &mut argv[2..].iter().map(|s| s.as_str());
     while let Some(arg) = args.next() {
         match arg {
@@ -161,17 +167,13 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--no-listing" => server.no_listing = 1,
             "--mimetypes" => {
                 let filename = args.next().ok_or("missing filename after --mimetypes")?;
-                // TODO: free this
-                let filename = CString::new(filename).unwrap().into_raw();
-                parse_extension_map_file(server, filename);
+                mime_map.parse_extension_map_file(&OsString::from(filename));
             }
             "--default-mimetype" => {
-                let mimetype = args
+                mime_map.default_mimetype = args
                     .next()
-                    .ok_or("missing string after --default-mimetype")?;
-                // TODO: free this
-                let mimetype = CString::new(mimetype).unwrap().into_raw();
-                set_default_mimetype(server, mimetype);
+                    .ok_or("missing string after --default-mimetype")?
+                    .to_string();
             }
             "--uid" => {
                 let uid = args.next().ok_or("missing uid after --uid")?;
@@ -214,9 +216,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--forward" => {
                 let host = args.next().ok_or("missing host after --forward")?;
                 let url = args.next().ok_or("missing url after --forward")?;
-                let host = CString::new(host).unwrap().into_raw();
-                let url = CString::new(url).unwrap().into_raw();
-                add_forward_mapping(server, host, url);
+                forward_map.insert(host.to_string(), url.to_string());
             }
             "--forward-all" => {
                 let url = args.next().ok_or("missing url after --forward-all")?;
@@ -337,30 +337,6 @@ pub extern "C" fn free_forward_map(server: *mut Server) {
     server.forward_map = null_mut();
 }
 
-// TODO: no longer called from C
-#[no_mangle]
-pub extern "C" fn add_forward_mapping(
-    server: *mut Server,
-    host: *const libc::c_char,
-    target_url: *const libc::c_char,
-) {
-    let server = unsafe { server.as_mut().unwrap() };
-    let forward_map = unsafe {
-        (server.forward_map as *mut ForwardMap)
-            .as_mut()
-            .expect("forward_map pointer is null")
-    };
-    let host = unsafe { CStr::from_ptr(host) }
-        .to_str()
-        .unwrap()
-        .to_string();
-    let target_url = unsafe { CStr::from_ptr(target_url) }
-        .to_str()
-        .unwrap()
-        .to_string();
-    forward_map.insert(host, target_url);
-}
-
 // TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
     "application/ogg         ogg",
@@ -443,18 +419,6 @@ impl MimeMap {
     }
 }
 
-// TODO: No longer called from C
-#[no_mangle]
-pub extern "C" fn set_default_mimetype(server: *mut Server, mimetype: *const libc::c_char) {
-    let server = unsafe { server.as_mut().unwrap() };
-    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
-    assert!(!mimetype.is_null());
-    mime_map.default_mimetype = unsafe { CStr::from_ptr(mimetype) }
-        .to_str()
-        .unwrap()
-        .to_string();
-}
-
 #[no_mangle]
 pub extern "C" fn parse_default_extension_map(server: *mut Server) {
     let server = unsafe { server.as_mut().unwrap() };
@@ -469,16 +433,6 @@ pub extern "C" fn free_mime_map(server: *mut Server) {
     let server = unsafe { server.as_mut().unwrap() };
     assert!(!server.mime_map.is_null());
     unsafe { Box::from_raw(server.mime_map as *mut MimeMap) };
-}
-
-// TODO: No longer called from C
-#[no_mangle]
-pub extern "C" fn parse_extension_map_file(server: *mut Server, filename: *const libc::c_char) {
-    let server = unsafe { server.as_mut().unwrap() };
-    assert!(!filename.is_null());
-    let filename = OsStr::from_bytes(unsafe { CStr::from_ptr(filename) }.to_bytes());
-    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
-    mime_map.parse_extension_map_file(filename);
 }
 
 /// Set the keep alive field.
@@ -695,7 +649,6 @@ impl<'a> std::fmt::Display for HtmlEscaped<'a> {
 ///
 /// You need to remember to deallocate the result.
 /// example: parse_field(conn, "Referer: ");
-#[no_mangle]
 fn parse_field(conn: &Connection, field: &str) -> Option<String> {
     // TODO: Header names should be case-insensitive.
     // TODO: Parse the request instead of naively searching for the header name.
