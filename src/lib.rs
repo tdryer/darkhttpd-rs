@@ -129,6 +129,9 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     // TODO: free this
     server.wwwroot = CString::new(wwwroot).unwrap().into_raw();
 
+    // set default index name
+    server.index_name = CString::new("index.html").unwrap().into_raw();
+
     let forward_map = unsafe {
         (server.forward_map as *mut ForwardMap)
             .as_mut()
@@ -145,7 +148,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             }
             "--addr" => {
                 let addr = args.next().ok_or("missing ip after --addr")?;
-                // TODO: free this
+                // freed by `free_server_fields`
                 server.bindaddr = CString::new(addr).unwrap().into_raw();
             }
             "--maxconn" => {
@@ -154,14 +157,17 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             }
             "--log" => {
                 let filename = args.next().ok_or("missing filename after --log")?;
-                // TODO: free this
+                // freed by `free_server_fields`
                 server.logfile_name = CString::new(filename).unwrap().into_raw();
             }
             "--chroot" => server.want_chroot = 1,
             "--daemon" => server.want_daemon = 1,
             "--index" => {
+                // free and replace default value
+                assert!(!server.index_name.is_null());
+                unsafe { CString::from_raw(server.index_name) };
                 let filename = args.next().ok_or("missing filename after --index")?;
-                // TODO: free this
+                // freed by `free_server_fields`
                 server.index_name = CString::new(filename).unwrap().into_raw();
             }
             "--no-listing" => server.no_listing = 1,
@@ -207,7 +213,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             }
             "--pidfile" => {
                 let filename = args.next().ok_or("missing filename after --pidfile")?;
-                // TODO: free this
+                // freed by `free_server_fields`
                 server.pidfile_name = CString::new(filename).unwrap().into_raw();
             }
             "--no-keepalive" => server.want_keepalive = 0,
@@ -234,7 +240,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
                     return Err("expected user:pass after --auth".to_string());
                 }
                 let auth_key = format!("Basic {}", Base64Encoded(user_pass.as_bytes()));
-                // TODO: free this
+                // freed by `free_server_fields`
                 server.auth_key = CString::new(auth_key).unwrap().into_raw();
             }
             "--ipv6" => server.inet6 = 1,
@@ -244,6 +250,62 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Free server struct fields.
+#[no_mangle]
+pub extern "C" fn free_server_fields(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    assert!(!server.wwwroot.is_null());
+    unsafe { CString::from_raw(server.wwwroot) };
+    server.wwwroot = null_mut();
+
+    // free(srv.auth_key);
+    if !server.auth_key.is_null() {
+        unsafe { CString::from_raw(server.auth_key) };
+        server.auth_key = null_mut();
+    }
+
+    if !server.pidfile_name.is_null() {
+        unsafe { CString::from_raw(server.pidfile_name) };
+        server.pidfile_name = null_mut();
+    }
+
+    assert!(!server.index_name.is_null());
+    unsafe { CString::from_raw(server.index_name) };
+    server.index_name = null_mut();
+
+    if !server.logfile_name.is_null() {
+        unsafe { CString::from_raw(server.logfile_name) };
+        server.logfile_name = null_mut();
+    }
+
+    if !server.bindaddr.is_null() {
+        unsafe { CString::from_raw(server.bindaddr) };
+        server.bindaddr = null_mut();
+    }
+
+    // free_forward_map(&srv);
+    assert!(!server.forward_map.is_null());
+    unsafe { Box::from_raw(server.forward_map as *mut ForwardMap) };
+    server.forward_map = null_mut();
+
+    // free_connections_list(&srv);
+    assert!(!server.connections.is_null());
+    let mut connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
+    for mut conn in connections.drain(..) {
+        free_connection(server, &mut conn); // logs connection and drops fields
+    }
+    server.connections = null_mut();
+
+    // free_mime_map(&srv);
+    assert!(!server.mime_map.is_null());
+    unsafe { Box::from_raw(server.mime_map as *mut MimeMap) };
+
+    // free_keep_alive_field(&srv);
+    assert!(!server.keep_alive_field.is_null());
+    unsafe { Box::from_raw(server.keep_alive_field as *mut String) };
 }
 
 const BASE64_TABLE: &[char] = &[
@@ -325,16 +387,8 @@ type ForwardMap = HashMap<String, String>;
 pub extern "C" fn init_forward_map(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
     assert!(server.forward_map.is_null());
-    // freed by `free_forward_map`
+    // freed by `free_server_fields`
     server.forward_map = Box::into_raw(Box::new(ForwardMap::new())) as *mut libc::c_void;
-}
-
-#[no_mangle]
-pub extern "C" fn free_forward_map(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    assert!(!server.forward_map.is_null());
-    unsafe { Box::from_raw(server.forward_map as *mut ForwardMap) };
-    server.forward_map = null_mut();
 }
 
 // TODO: Include this as a file.
@@ -424,15 +478,8 @@ pub extern "C" fn parse_default_extension_map(server: *mut Server) {
     let server = unsafe { server.as_mut().unwrap() };
     let mime_map = MimeMap::parse_default_extension_map();
     assert!(server.mime_map.is_null());
-    // freed by `free_mime_map`
+    // freed by `free_server_fields`
     server.mime_map = Box::into_raw(Box::new(mime_map)) as *mut libc::c_void;
-}
-
-#[no_mangle]
-pub extern "C" fn free_mime_map(server: *mut Server) {
-    let server = unsafe { server.as_mut().unwrap() };
-    assert!(!server.mime_map.is_null());
-    unsafe { Box::from_raw(server.mime_map as *mut MimeMap) };
 }
 
 /// Set the keep alive field.
@@ -441,16 +488,8 @@ pub extern "C" fn set_keep_alive_field(server: *mut Server) {
     let server = unsafe { server.as_mut().unwrap() };
     assert!(server.keep_alive_field.is_null());
     let keep_alive = format!("Keep-Alive: timeout={}\r\n", server.timeout_secs);
-    // freed by `free_keep_alive_field`
+    // freed by `free_server_fields`
     server.keep_alive_field = Box::into_raw(Box::new(keep_alive)) as *mut libc::c_void;
-}
-
-/// Frees the keep alive field.
-#[no_mangle]
-pub extern "C" fn free_keep_alive_field(server: *mut Server) {
-    let server = unsafe { server.as_mut().unwrap() };
-    assert!(!server.keep_alive_field.is_null());
-    unsafe { Box::from_raw(server.keep_alive_field as *mut String) };
 }
 
 /// Returns Connection or Keep-Alive header, depending on conn_close.
@@ -1601,20 +1640,8 @@ pub extern "C" fn init_connections_list(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
     assert!(server.connections.is_null());
     let connections: Vec<Connection> = Vec::new();
-    // freed by `free_connections_list`
+    // freed by `free_server_fields`
     server.connections = Box::into_raw(Box::new(connections)) as *mut libc::c_void;
-}
-
-/// Free connections list.
-#[no_mangle]
-pub extern "C" fn free_connections_list(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-    assert!(!server.connections.is_null());
-    let mut connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
-    for mut conn in connections.drain(..) {
-        free_connection(server, &mut conn); // logs connection and drops fields
-    }
-    server.connections = null_mut();
 }
 
 /// Remove connection by index.

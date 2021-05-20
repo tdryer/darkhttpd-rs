@@ -176,10 +176,10 @@ struct server {
      * removed from the connlist.
      */
     int timeout_secs;
-    const char *bindaddr;
+    char *bindaddr;
     uint16_t bindport;
     int max_connections;
-    const char *index_name;
+    char *index_name;
     int no_listing;
     int sockin; /* socket to accept connections from */
     /* Time is cached in the event loop to avoid making an excessive number of
@@ -221,7 +221,7 @@ static struct server srv = {
     .bindaddr = NULL,
     .bindport = 8080,           /* or 80 if running as root */
     .max_connections = -1,      /* kern.ipc.somaxconn */
-    .index_name = "index.html",
+    .index_name = NULL,
     .no_listing = 0,
     .sockin = -1,
     .now = 0,
@@ -304,7 +304,6 @@ static unsigned int xasprintf(char **ret, const char *format, ...) {
 }
 
 extern void init_forward_map(struct server *srv);
-extern void free_forward_map(struct server *srv);
 
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.
@@ -492,11 +491,7 @@ extern void set_keep_alive_field(struct server *srv);
 /* Initialize connections list. */
 extern void init_connections_list(struct server *srv);
 
-extern void free_connections_list(struct server *srv);
-
-extern void free_mime_map(struct server *srv);
-
-extern void free_keep_alive_field(struct server *srv);
+extern void free_server_fields(struct server *srv);
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
@@ -572,14 +567,10 @@ int main(int argc, char **argv) {
 
     /* free the mallocs */
     {
-        free(srv.wwwroot);
         free(srv.server_hdr);
-        free(srv.auth_key);
-        free_forward_map(&srv);
-        free_connections_list(&srv);
-        free_mime_map(&srv);
-        free_keep_alive_field(&srv);
     }
+
+    free_server_fields(&srv);
 
     /* usage stats */
     {
