@@ -160,6 +160,9 @@ static void warn(const char *format, ...) {
 }
 #endif
 
+#define INVALID_UID ((uid_t) -1)
+#define INVALID_GID ((gid_t) -1)
+
 struct connection; /* defined by Rust */
 
 /* Container for mutable static variables. */
@@ -205,6 +208,8 @@ struct server {
     volatile int running;       /* signal handler sets this to false */
     void *keep_alive_field;     /* used by Rust */
     void *mime_map;             /* used by Rust */
+    uid_t drop_uid;
+    gid_t drop_gid;
 };
 
 static struct server srv = {
@@ -242,13 +247,9 @@ static struct server srv = {
     .running = 1,
     .keep_alive_field = NULL,
     .mime_map = NULL,
+    .drop_uid = INVALID_UID,
+    .drop_gid = INVALID_GID,
 };
-
-#define INVALID_UID ((uid_t) -1)
-#define INVALID_GID ((gid_t) -1)
-
-static uid_t drop_uid = INVALID_UID;
-static gid_t drop_gid = INVALID_GID;
 
 /* close() that dies on error.  */
 static void xclose(const int fd) {
@@ -304,7 +305,6 @@ static unsigned int xasprintf(char **ret, const char *format, ...) {
 
 extern void init_forward_map(struct server *srv);
 extern void free_forward_map(struct server *srv);
-extern void add_forward_mapping(struct server *srv, const char *host, const char *target_url);
 
 /* Adds contents of default_extension_map[] to mime_map list.  The array must
  * be NULL terminated.
@@ -322,11 +322,6 @@ extern void parse_extension_map_file(struct server *srv, const char *filename);
  * connections from.
  */
 extern void init_sockin(struct server *srv);
-
-extern void usage(const struct server *srv, const char *argv0);
-
-extern char *base64_encode(const char *str);
-extern void free_base64_encode(char *str);
 
 /* Returns 1 if string is a number, 0 otherwise.  Set num to NULL if
  * disinterested in value.
@@ -348,160 +343,7 @@ static int str_to_num(const char *str, long long *num) {
     return 1;
 }
 
-/* Returns a valid number or dies. */
-static long long xstr_to_num(const char *str) {
-    long long ret;
-
-    if (!str_to_num(str, &ret)) {
-        errx(1, "number \"%s\" is invalid", str);
-    }
-    return ret;
-}
-
-static void parse_commandline(const int argc, char *argv[]) {
-    int i;
-    size_t len;
-
-    if ((argc < 2) || (argc == 2 && strcmp(argv[1], "--help") == 0)) {
-        usage(&srv, argv[0]); /* no wwwroot given */
-        exit(EXIT_SUCCESS);
-    }
-
-    if (getuid() == 0)
-        srv.bindport = 80;
-
-    srv.wwwroot = xstrdup(argv[1]);
-    /* Strip ending slash. */
-    len = strlen(srv.wwwroot);
-    if (len > 0)
-        if (srv.wwwroot[len - 1] == '/')
-            srv.wwwroot[len - 1] = '\0';
-
-    /* walk through the remainder of the arguments (if any) */
-    for (i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--port") == 0) {
-            if (++i >= argc)
-                errx(1, "missing number after --port");
-            srv.bindport = (uint16_t)xstr_to_num(argv[i]);
-        }
-        else if (strcmp(argv[i], "--addr") == 0) {
-            if (++i >= argc)
-                errx(1, "missing ip after --addr");
-            srv.bindaddr = argv[i];
-        }
-        else if (strcmp(argv[i], "--maxconn") == 0) {
-            if (++i >= argc)
-                errx(1, "missing number after --maxconn");
-            srv.max_connections = (int)xstr_to_num(argv[i]);
-        }
-        else if (strcmp(argv[i], "--log") == 0) {
-            if (++i >= argc)
-                errx(1, "missing filename after --log");
-            srv.logfile_name = argv[i];
-        }
-        else if (strcmp(argv[i], "--chroot") == 0) {
-            srv.want_chroot = 1;
-        }
-        else if (strcmp(argv[i], "--daemon") == 0) {
-            srv.want_daemon = 1;
-        }
-        else if (strcmp(argv[i], "--index") == 0) {
-            if (++i >= argc)
-                errx(1, "missing filename after --index");
-            srv.index_name = argv[i];
-        }
-        else if (strcmp(argv[i], "--no-listing") == 0) {
-            srv.no_listing = 1;
-        }
-        else if (strcmp(argv[i], "--mimetypes") == 0) {
-            if (++i >= argc)
-                errx(1, "missing filename after --mimetypes");
-            parse_extension_map_file(&srv, argv[i]);
-        }
-        else if (strcmp(argv[i], "--default-mimetype") == 0) {
-            if (++i >= argc)
-                errx(1, "missing string after --default-mimetype");
-            set_default_mimetype(&srv, argv[i]);
-        }
-        else if (strcmp(argv[i], "--uid") == 0) {
-            struct passwd *p;
-            if (++i >= argc)
-                errx(1, "missing uid after --uid");
-            p = getpwnam(argv[i]);
-            if (!p) {
-                p = getpwuid((uid_t)xstr_to_num(argv[i]));
-            }
-            if (!p)
-                errx(1, "no such uid: `%s'", argv[i]);
-            drop_uid = p->pw_uid;
-        }
-        else if (strcmp(argv[i], "--gid") == 0) {
-            struct group *g;
-            if (++i >= argc)
-                errx(1, "missing gid after --gid");
-            g = getgrnam(argv[i]);
-            if (!g) {
-                g = getgrgid((gid_t)xstr_to_num(argv[i]));
-            }
-            if (!g) {
-                errx(1, "no such gid: `%s'", argv[i]);
-            }
-            drop_gid = g->gr_gid;
-        }
-        else if (strcmp(argv[i], "--pidfile") == 0) {
-            if (++i >= argc)
-                errx(1, "missing filename after --pidfile");
-            srv.pidfile_name = argv[i];
-        }
-        else if (strcmp(argv[i], "--no-keepalive") == 0) {
-            srv.want_keepalive = 0;
-        }
-        else if (strcmp(argv[i], "--accf") == 0) {
-            srv.want_accf = 1;
-        }
-        else if (strcmp(argv[i], "--syslog") == 0) {
-            srv.syslog_enabled = 1;
-        }
-        else if (strcmp(argv[i], "--forward") == 0) {
-            const char *host, *url;
-            if (++i >= argc)
-                errx(1, "missing host after --forward");
-            host = argv[i];
-            if (++i >= argc)
-                errx(1, "missing url after --forward");
-            url = argv[i];
-            add_forward_mapping(&srv, host, url);
-        }
-        else if (strcmp(argv[i], "--forward-all") == 0) {
-            if (++i >= argc)
-                errx(1, "missing url after --forward-all");
-            srv.forward_all_url = argv[i];
-        }
-        else if (strcmp(argv[i], "--no-server-id") == 0) {
-            srv.want_server_id = 0;
-        }
-        else if (strcmp(argv[i], "--timeout") == 0) {
-            if (++i >= argc)
-                errx(1, "missing number after --timeout");
-            srv.timeout_secs = (int)xstr_to_num(argv[i]);
-        }
-        else if (strcmp(argv[i], "--auth") == 0) {
-            if (++i >= argc || strchr(argv[i], ':') == NULL)
-                errx(1, "missing 'user:pass' after --auth");
-
-            char *key = base64_encode(argv[i]);
-            xasprintf(&srv.auth_key, "Basic %s", key);
-            free_base64_encode(key);
-        }
-#ifdef HAVE_INET6
-        else if (strcmp(argv[i], "--ipv6") == 0) {
-            srv.inet6 = 1;
-        }
-#endif
-        else
-            errx(1, "unknown argument `%s'", argv[i]);
-    }
-}
+extern void parse_commandline(struct server *srv);
 
 /* Main loop of the httpd - a select() and then delegation to accept
  * connections, handle receiving of requests, and sending of replies.
@@ -662,7 +504,7 @@ int main(int argc, char **argv) {
     init_connections_list(&srv);
     init_forward_map(&srv);
     parse_default_extension_map(&srv);
-    parse_commandline(argc, argv);
+    parse_commandline(&srv);
     set_keep_alive_field(&srv);
     if (srv.want_server_id)
         xasprintf(&srv.server_hdr, "Server: %s\r\n", srv.pkgname);
@@ -700,19 +542,19 @@ int main(int argc, char **argv) {
         printf("chrooted to `%s'\n", srv.wwwroot);
         srv.wwwroot[0] = '\0'; /* empty string */
     }
-    if (drop_gid != INVALID_GID) {
+    if (srv.drop_gid != INVALID_GID) {
         gid_t list[1];
-        list[0] = drop_gid;
+        list[0] = srv.drop_gid;
         if (setgroups(1, list) == -1)
-            err(1, "setgroups([%d])", (int)drop_gid);
-        if (setgid(drop_gid) == -1)
-            err(1, "setgid(%d)", (int)drop_gid);
-        printf("set gid to %d\n", (int)drop_gid);
+            err(1, "setgroups([%d])", (int)srv.drop_gid);
+        if (setgid(srv.drop_gid) == -1)
+            err(1, "setgid(%d)", (int)srv.drop_gid);
+        printf("set gid to %d\n", (int)srv.drop_gid);
     }
-    if (drop_uid != INVALID_UID) {
-        if (setuid(drop_uid) == -1)
-            err(1, "setuid(%d)", (int)drop_uid);
-        printf("set uid to %d\n", (int)drop_uid);
+    if (srv.drop_uid != INVALID_UID) {
+        if (setuid(srv.drop_uid) == -1)
+            err(1, "setuid(%d)", (int)srv.drop_uid);
+        printf("set uid to %d\n", (int)srv.drop_uid);
     }
 
     /* create pidfile */

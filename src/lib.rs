@@ -19,17 +19,13 @@ use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
+use nix::unistd::{getuid, Gid, Group, Uid, User};
 
 mod bindings;
 
 use bindings::server as Server;
 
-#[no_mangle]
-pub extern "C" fn usage(server: *const Server, argv0: *const libc::c_char) {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
-    assert!(!argv0.is_null());
-    let argv0 = unsafe { CStr::from_ptr(argv0) }.to_str().unwrap();
-    assert!(!server.index_name.is_null());
+fn usage(server: &Server, argv0: &str) {
     let index_name = unsafe { CStr::from_ptr(server.index_name) }
         .to_str()
         .unwrap();
@@ -99,6 +95,157 @@ macro_rules! abort {
     })
 }
 
+fn parse_num<T: FromStr>(number: &str) -> Result<T, String> {
+    Ok(number
+        .parse()
+        .map_err(|_| format!("number {} is invalid", number))?)
+}
+
+#[no_mangle]
+pub extern "C" fn parse_commandline(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    if let Err(e) = parse_commandline_rust(server) {
+        abort!("{}", e);
+    }
+}
+fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
+    // TODO: allow non-UTF-8 filename arguments?
+    let argv: Vec<String> = std::env::args().collect();
+
+    if (argv.len() < 2) || (argv.len() == 2 && argv[1] == "--help") {
+        usage(server, &argv[0]); /* no wwwroot given */
+        std::process::exit(0);
+    }
+
+    if getuid().is_root() {
+        server.bindport = 80;
+    }
+
+    // Strip ending slash.
+    // TODO: How does this work if the root is "/"?
+    let mut wwwroot: &str = &argv[1];
+    if wwwroot.ends_with('/') {
+        wwwroot = &wwwroot[0..wwwroot.len() - 1];
+    }
+    // TODO: free this
+    server.wwwroot = CString::new(wwwroot).unwrap().into_raw();
+
+    let args = &mut argv[2..].iter().map(|s| s.as_str());
+    while let Some(arg) = args.next() {
+        match arg {
+            "--port" => {
+                let number = args.next().ok_or("missing number after --port")?;
+                server.bindport = parse_num(number)?;
+            }
+            "--addr" => {
+                let addr = args.next().ok_or("missing ip after --addr")?;
+                // TODO: free this
+                server.bindaddr = CString::new(addr).unwrap().into_raw();
+            }
+            "--maxconn" => {
+                server.max_connections =
+                    parse_num(args.next().ok_or("missing number after --maxconn")?)?;
+            }
+            "--log" => {
+                let filename = args.next().ok_or("missing filename after --log")?;
+                // TODO: free this
+                server.logfile_name = CString::new(filename).unwrap().into_raw();
+            }
+            "--chroot" => server.want_chroot = 1,
+            "--daemon" => server.want_daemon = 1,
+            "--index" => {
+                let filename = args.next().ok_or("missing filename after --index")?;
+                // TODO: free this
+                server.index_name = CString::new(filename).unwrap().into_raw();
+            }
+            "--no-listing" => server.no_listing = 1,
+            "--mimetypes" => {
+                let filename = args.next().ok_or("missing filename after --mimetypes")?;
+                // TODO: free this
+                let filename = CString::new(filename).unwrap().into_raw();
+                parse_extension_map_file(server, filename);
+            }
+            "--default-mimetype" => {
+                let mimetype = args
+                    .next()
+                    .ok_or("missing string after --default-mimetype")?;
+                // TODO: free this
+                let mimetype = CString::new(mimetype).unwrap().into_raw();
+                set_default_mimetype(server, mimetype);
+            }
+            "--uid" => {
+                let uid = args.next().ok_or("missing uid after --uid")?;
+                let user1 = User::from_name(uid)
+                    .map_err(|e| format!("getpwnam failed: {}", e.as_errno().unwrap().desc()))?;
+                let user2 = parse_num(uid)
+                    .ok()
+                    .and_then(|uid| User::from_uid(Uid::from_raw(uid)).transpose())
+                    .transpose()
+                    .map_err(|e| format!("getpwuid failed: {}", e.as_errno().unwrap().desc()))?;
+                server.drop_uid = user1
+                    .or(user2)
+                    .ok_or_else(|| format!("no such uid: `{}'", uid))?
+                    .uid
+                    .as_raw();
+            }
+            "--gid" => {
+                let gid = args.next().ok_or("missing gid after --gid")?;
+                let group1 = Group::from_name(gid)
+                    .map_err(|e| format!("getgrnam failed: {}", e.as_errno().unwrap().desc()))?;
+                let group2 = parse_num(gid)
+                    .ok()
+                    .and_then(|gid| Group::from_gid(Gid::from_raw(gid)).transpose())
+                    .transpose()
+                    .map_err(|e| format!("getgrgid failed: {}", e.as_errno().unwrap().desc()))?;
+                server.drop_gid = group1
+                    .or(group2)
+                    .ok_or_else(|| format!("no such gid: `{}'", gid))?
+                    .gid
+                    .as_raw();
+            }
+            "--pidfile" => {
+                let filename = args.next().ok_or("missing filename after --pidfile")?;
+                // TODO: free this
+                server.pidfile_name = CString::new(filename).unwrap().into_raw();
+            }
+            "--no-keepalive" => server.want_keepalive = 0,
+            "--accf" => server.want_accf = 1, // TODO: remove?
+            "--syslog" => server.syslog_enabled = 1,
+            "--forward" => {
+                let host = args.next().ok_or("missing host after --forward")?;
+                let url = args.next().ok_or("missing url after --forward")?;
+                let host = CString::new(host).unwrap().into_raw();
+                let url = CString::new(url).unwrap().into_raw();
+                add_forward_mapping(server, host, url);
+            }
+            "--forward-all" => {
+                let url = args.next().ok_or("missing url after --forward-all")?;
+                let url = CString::new(url).unwrap().into_raw();
+                server.forward_all_url = url;
+            }
+            "--no-server-id" => server.want_server_id = 0,
+            "--timeout" => {
+                server.timeout_secs =
+                    parse_num(args.next().ok_or("missing number after --timeout")?)?;
+            }
+            "--auth" => {
+                let user_pass = args.next().ok_or("missing user:pass after --auth")?;
+                if !user_pass.contains(':') {
+                    return Err("expected user:pass after --auth".to_string());
+                }
+                let auth_key = format!("Basic {}", Base64Encoded(user_pass.as_bytes()));
+                // TODO: free this
+                server.auth_key = CString::new(auth_key).unwrap().into_raw();
+            }
+            "--ipv6" => server.inet6 = 1,
+            _ => {
+                return Err(format!("unknown argument `{}'", arg));
+            }
+        }
+    }
+    Ok(())
+}
+
 const BASE64_TABLE: &[char] = &[
     'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
     'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l',
@@ -126,21 +273,6 @@ impl<'a> std::fmt::Display for Base64Encoded<'a> {
         }
         Ok(())
     }
-}
-
-#[no_mangle]
-pub extern "C" fn base64_encode(s: *const libc::c_char) -> *mut libc::c_char {
-    assert!(!s.is_null());
-    let input = unsafe { CStr::from_ptr(s) }.to_str().unwrap();
-    let output = Base64Encoded(input.as_bytes()).to_string();
-    // freed by `free_base64_encode`
-    CString::new(output).unwrap().into_raw()
-}
-
-#[no_mangle]
-pub extern "C" fn free_base64_encode(s: *mut libc::c_char) {
-    assert!(!s.is_null());
-    unsafe { CString::from_raw(s) };
 }
 
 // TODO: Oxidize types
@@ -205,6 +337,7 @@ pub extern "C" fn free_forward_map(server: *mut Server) {
     server.forward_map = null_mut();
 }
 
+// TODO: no longer called from C
 #[no_mangle]
 pub extern "C" fn add_forward_mapping(
     server: *mut Server,
@@ -310,6 +443,7 @@ impl MimeMap {
     }
 }
 
+// TODO: No longer called from C
 #[no_mangle]
 pub extern "C" fn set_default_mimetype(server: *mut Server, mimetype: *const libc::c_char) {
     let server = unsafe { server.as_mut().unwrap() };
@@ -337,6 +471,7 @@ pub extern "C" fn free_mime_map(server: *mut Server) {
     unsafe { Box::from_raw(server.mime_map as *mut MimeMap) };
 }
 
+// TODO: No longer called from C
 #[no_mangle]
 pub extern "C" fn parse_extension_map_file(server: *mut Server, filename: *const libc::c_char) {
     let server = unsafe { server.as_mut().unwrap() };
