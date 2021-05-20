@@ -24,11 +24,9 @@ mod bindings;
 
 use bindings::server as Server;
 
-fn usage(server: &Server, argv0: &str) {
-    let index_name = unsafe { CStr::from_ptr(server.index_name) }
-        .to_str()
-        .unwrap();
+const DEFAULT_INDEX_NAME: &str = "index.html";
 
+fn usage(server: &Server, argv0: &str) {
     print!(
         "usage:\t{} /path/to/wwwroot [flags]\n\n\
         flags:\t--port number (default: {}, or 80 if running as root)\n\
@@ -81,7 +79,7 @@ fn usage(server: &Server, argv0: &str) {
         \t\tEnable basic authentication.\n\n\
         \t--ipv6\n\
         \t\tListen on IPv6 address.\n\n",
-        argv0, server.bindport, index_name, DEFAULT_MIME_TYPE, server.timeout_secs
+        argv0, server.bindport, DEFAULT_INDEX_NAME, DEFAULT_MIME_TYPE, server.timeout_secs
     );
 }
 
@@ -130,7 +128,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     server.wwwroot = CString::new(wwwroot).unwrap().into_raw();
 
     // set default index name
-    server.index_name = CString::new("index.html").unwrap().into_raw();
+    server.index_name = CString::new(DEFAULT_INDEX_NAME).unwrap().into_raw();
 
     let forward_map = unsafe {
         (server.forward_map as *mut ForwardMap)
