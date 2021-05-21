@@ -329,27 +329,7 @@ extern void httpd_poll(struct server *srv);
 
 extern void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null);
 
-static void daemonize_finish(int *lifeline_read, int *lifeline_write, int *fd_null) {
-    if (*fd_null == -1)
-        return; /* didn't daemonize_start() so we're not daemonizing */
-
-    if (setsid() == -1)
-        err(1, "setsid");
-    if (close(*lifeline_read) == -1)
-        warn("close read end of lifeline in child");
-    if (close(*lifeline_write) == -1)
-        warn("couldn't cut the lifeline");
-
-    /* close all our std fds */
-    if (dup2(*fd_null, STDIN_FILENO) == -1)
-        warn("dup2(stdin)");
-    if (dup2(*fd_null, STDOUT_FILENO) == -1)
-        warn("dup2(stdout)");
-    if (dup2(*fd_null, STDERR_FILENO) == -1)
-        warn("dup2(stderr)");
-    if (*fd_null > 2)
-        close(*fd_null);
-}
+extern void daemonize_finish(int *lifeline_read, int *lifeline_write, int *fd_null);
 
 extern void pidfile_remove(struct server *srv);
 

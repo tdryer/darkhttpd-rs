@@ -21,7 +21,7 @@ use nix::sys::socket;
 use nix::sys::time::TimeVal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{
-    close, fork, getpid, getuid, pipe, read, ForkResult, Gid, Group, Pid, Uid, User,
+    close, dup2, fork, getpid, getuid, pipe, read, setsid, ForkResult, Gid, Group, Pid, Uid, User,
 };
 
 mod bindings;
@@ -441,6 +441,44 @@ pub extern "C" fn daemonize_start(
         }
         Ok(ForkResult::Child) => {} // continue initializing
         Err(e) => abort!("fork failed: {}", e),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn daemonize_finish(
+    lifeline_read: *mut libc::c_int,
+    lifeline_write: *mut libc::c_int,
+    fd_null: *mut libc::c_int,
+) {
+    let lifeline_read = unsafe { lifeline_read.as_mut() }.expect("lifeline_read is null");
+    let lifeline_write = unsafe { lifeline_write.as_mut() }.expect("lifeline_write is null");
+    let fd_null = unsafe { fd_null.as_mut() }.expect("fd_null is null");
+
+    if let Err(e) = setsid() {
+        abort!("setsid failed: {}", e);
+    }
+    if let Err(e) = close(*lifeline_read) {
+        eprintln!(
+            "warning: failed to close read end of lifeline in child: {}",
+            e
+        );
+    }
+    if let Err(e) = close(*lifeline_write) {
+        eprintln!("warning: failed to cut the lifeline: {}", e);
+    }
+
+    // close all our std fds
+    if let Err(e) = dup2(*fd_null, libc::STDIN_FILENO) {
+        eprintln!("warning: failed to close stdin: {}", e);
+    }
+    if let Err(e) = dup2(*fd_null, libc::STDOUT_FILENO) {
+        eprintln!("warning: failed to close stdout: {}", e);
+    }
+    if let Err(e) = dup2(*fd_null, libc::STDERR_FILENO) {
+        eprintln!("warning: failed to close stderr: {}", e);
+    }
+    if *fd_null > 2 {
+        close(*fd_null).ok();
     }
 }
 
