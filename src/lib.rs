@@ -35,9 +35,8 @@ pub extern "C" fn stop_running(_sig: libc::c_int) {
     RUNNING.store(false, Ordering::Relaxed);
 }
 
-#[no_mangle]
-pub extern "C" fn is_running() -> libc::c_int {
-    RUNNING.load(Ordering::Relaxed) as libc::c_int
+fn is_running() -> bool {
+    RUNNING.load(Ordering::Relaxed)
 }
 
 const DEFAULT_INDEX_NAME: &str = "index.html";
@@ -97,6 +96,16 @@ fn usage(server: &Server, argv0: &str) {
         \t\tListen on IPv6 address.\n\n",
         argv0, server.bindport, DEFAULT_INDEX_NAME, DEFAULT_MIME_TYPE, server.timeout_secs
     );
+}
+
+#[no_mangle]
+pub extern "C" fn main_rust(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    // main loop
+    while is_running() {
+        httpd_poll(server);
+    }
 }
 
 /// Prints message to standard error and exits with code 1.
@@ -1890,10 +1899,7 @@ fn accept_connection(server: &mut Server) {
 
 /// Main loop of the httpd - a select() and then delegation to accept connections, handle receiving
 /// of requests, and sending of replies.
-#[no_mangle]
-pub extern "C" fn httpd_poll(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-
+fn httpd_poll(server: &mut Server) {
     let mut recv_set = FdSet::new();
     let mut send_set = FdSet::new();
     let mut timeout_required = false;

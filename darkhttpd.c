@@ -322,11 +322,6 @@ extern void init_sockin(struct server *srv);
 
 extern void parse_commandline(struct server *srv);
 
-/* Main loop of the httpd - a select() and then delegation to accept
- * connections, handle receiving of requests, and sending of replies.
- */
-extern void httpd_poll(struct server *srv);
-
 extern void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null);
 
 extern void daemonize_finish(int *lifeline_read, int *lifeline_write, int *fd_null);
@@ -337,8 +332,6 @@ extern void pidfile_create(struct server *srv);
 
 extern void stop_running(int sig);
 
-extern int is_running();
-
 /* Set the keep alive field. */
 extern void set_keep_alive_field(struct server *srv);
 
@@ -346,6 +339,8 @@ extern void set_keep_alive_field(struct server *srv);
 extern void init_connections_list(struct server *srv);
 
 extern void free_server_fields(struct server *srv);
+
+extern void main_rust(struct server *srv);
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
@@ -416,7 +411,7 @@ int main(int argc, char **argv) {
     if (srv.want_daemon) daemonize_finish(&lifeline_read, &lifeline_write, &fd_null);
 
     /* main loop */
-    while (is_running()) httpd_poll(&srv);
+    main_rust(&srv);
 
     /* clean exit */
     xclose(srv.sockin);
