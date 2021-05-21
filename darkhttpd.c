@@ -327,47 +327,7 @@ extern void parse_commandline(struct server *srv);
  */
 extern void httpd_poll(struct server *srv);
 
-/* Daemonize helpers. */
-#define PATH_DEVNULL "/dev/null"
-
-static void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null) {
-    pid_t f;
-
-    int lifeline[2] = { -1, -1 };
-    if (pipe(lifeline) == -1)
-        err(1, "pipe(lifeline)");
-    *lifeline_read = lifeline[0];
-    *lifeline_write = lifeline[1];
-
-    *fd_null = open(PATH_DEVNULL, O_RDWR, 0);
-    if (*fd_null == -1)
-        err(1, "open(" PATH_DEVNULL ")");
-
-    f = fork();
-    if (f == -1)
-        err(1, "fork");
-    else if (f != 0) {
-        /* parent: wait for child */
-        char tmp[1];
-        int status;
-        pid_t w;
-
-        if (close(*lifeline_write) == -1)
-            warn("close lifeline in parent");
-        if (read(*lifeline_read, tmp, sizeof(tmp)) == -1)
-            warn("read lifeline in parent");
-        w = waitpid(f, &status, WNOHANG);
-        if (w == -1)
-            err(1, "waitpid");
-        else if (w == 0)
-            /* child is running happily */
-            exit(EXIT_SUCCESS);
-        else
-            /* child init failed, pass on its exit status */
-            exit(WEXITSTATUS(status));
-    }
-    /* else we are the child: continue initializing */
-}
+extern void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null);
 
 static void daemonize_finish(int *lifeline_read, int *lifeline_write, int *fd_null) {
     if (*fd_null == -1)

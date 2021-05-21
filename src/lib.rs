@@ -19,7 +19,10 @@ use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
-use nix::unistd::{close, getpid, getuid, Gid, Group, Pid, Uid, User};
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
+use nix::unistd::{
+    close, fork, getpid, getuid, pipe, read, ForkResult, Gid, Group, Pid, Uid, User,
+};
 
 mod bindings;
 
@@ -390,6 +393,55 @@ pub extern "C" fn pidfile_create(server: *mut Server) {
     };
 
     server.pidfile_fd = pidfile.into_raw_fd();
+}
+
+const PATH_DEVNULL: &str = "/dev/null";
+
+#[no_mangle]
+pub extern "C" fn daemonize_start(
+    lifeline_read: *mut libc::c_int,
+    lifeline_write: *mut libc::c_int,
+    fd_null: *mut libc::c_int,
+) {
+    // create lifeline pipe
+    let lifeline_read = unsafe { lifeline_read.as_mut() }.expect("lifeline_read is null");
+    let lifeline_write = unsafe { lifeline_write.as_mut() }.expect("lifeline_write is null");
+    match pipe() {
+        Ok((read, write)) => {
+            *lifeline_read = read;
+            *lifeline_write = write;
+        }
+        Err(e) => abort!("pipe failed: {}", e),
+    }
+
+    // populate fd_null
+    let fd_null = unsafe { fd_null.as_mut() }.expect("fd_null is null");
+    *fd_null = match OpenOptions::new().read(true).write(true).open(PATH_DEVNULL) {
+        Ok(file) => file.into_raw_fd(),
+        Err(e) => abort!("open {} failed: {}", PATH_DEVNULL, e),
+    };
+
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+            // wait for the child
+            if let Err(e) = close(*lifeline_write) {
+                eprintln!("warning: failed to close lifeline in parent: {}", e);
+            }
+            let mut buf = [0; 1];
+            if let Err(e) = read(*lifeline_read, &mut buf) {
+                eprintln!("warning: failed read lifeline in parent: {}", e);
+            }
+            // exit with status depending on child status
+            match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::StillAlive) => std::process::exit(0),
+                Ok(WaitStatus::Exited(_, status)) => std::process::exit(status),
+                Ok(_) => abort!("waitpid returned unknown status"),
+                Err(e) => abort!("waitpid failed: {}", e),
+            }
+        }
+        Ok(ForkResult::Child) => {} // continue initializing
+        Err(e) => abort!("fork failed: {}", e),
+    }
 }
 
 const BASE64_TABLE: &[char] = &[
