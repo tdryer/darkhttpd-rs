@@ -390,46 +390,9 @@ static void daemonize_finish(void) {
         close(fd_null);
 }
 
-/* [->] pidfile helpers, based on FreeBSD src/lib/libutil/pidfile.c,v 1.3
- * Original was copyright (c) 2005 Pawel Jakub Dawidek <pjd@FreeBSD.org>
- */
-#define PIDFILE_MODE 0600
-
 extern void pidfile_remove(struct server *srv);
 
-extern int pidfile_read(const struct server *srv);
-
-static void pidfile_create(struct server *srv) {
-    int error, fd;
-    char pidstr[16];
-
-    /* Open the PID file and obtain exclusive lock. */
-    fd = open(srv->pidfile_name,
-        O_WRONLY | O_CREAT | O_EXLOCK | O_TRUNC | O_NONBLOCK, PIDFILE_MODE);
-    if (fd == -1) {
-        if ((errno == EWOULDBLOCK) || (errno == EEXIST))
-            errx(1, "daemon already running with PID %d", pidfile_read(srv));
-        else
-            err(1, "can't create pidfile %s", srv->pidfile_name);
-    }
-    srv->pidfile_fd = fd;
-
-    if (ftruncate(fd, 0) == -1) {
-        error = errno;
-        pidfile_remove(srv);
-        errno = error;
-        err(1, "ftruncate() failed");
-    }
-
-    snprintf(pidstr, sizeof(pidstr), "%d", (int)getpid());
-    if (pwrite(fd, pidstr, strlen(pidstr), 0) != (ssize_t)strlen(pidstr)) {
-        error = errno;
-        pidfile_remove(srv);
-        errno = error;
-        err(1, "pwrite() failed");
-    }
-}
-/* [<-] end of pidfile helpers. */
+extern void pidfile_create(struct server *srv);
 
 extern void stop_running(int sig);
 

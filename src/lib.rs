@@ -2,13 +2,13 @@ use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr, OsString};
-use std::fs::{remove_file, File};
-use std::io::{BufRead, Read};
+use std::fs::{remove_file, File, OpenOptions};
+use std::io::{BufRead, Read, Write};
 use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
 };
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::ptr::null_mut;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,7 +19,7 @@ use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
-use nix::unistd::{close, getuid, Gid, Group, Uid, User};
+use nix::unistd::{close, getpid, getuid, Gid, Group, Pid, Uid, User};
 
 mod bindings;
 
@@ -319,9 +319,7 @@ pub extern "C" fn free_server_fields(server: *mut Server) {
     unsafe { Box::from_raw(server.keep_alive_field as *mut String) };
 }
 
-#[no_mangle]
-pub extern "C" fn pidfile_read(server: *const Server) -> libc::c_int {
-    let server = unsafe { server.as_ref().expect("server pointer is null") };
+fn pidfile_read(server: &Server) -> Pid {
     assert!(!server.pidfile_name.is_null());
     let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
         .to_str()
@@ -335,10 +333,10 @@ pub extern "C" fn pidfile_read(server: *const Server) -> libc::c_int {
     if let Err(e) = pidfile.read_to_string(&mut buf) {
         abort!("read from pidfile failed: {}", e);
     }
-    match buf.parse() {
+    Pid::from_raw(match buf.parse() {
         Ok(pid) => pid,
         Err(e) => abort!("invalid pidfile contents: {}", e),
-    }
+    })
 }
 
 #[no_mangle]
@@ -357,6 +355,41 @@ pub extern "C" fn pidfile_remove(server: *mut Server) {
         abort!("close(pidfile) failed: {}", e);
     }
     server.pidfile_fd = -1;
+}
+
+const PIDFILE_MODE: u32 = 0o600;
+
+#[no_mangle]
+pub extern "C" fn pidfile_create(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    assert!(!server.pidfile_name.is_null());
+    let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
+        .to_str()
+        .unwrap();
+    assert!(server.pidfile_fd == -1);
+
+    // Create the pidfile, failing if it already exists.
+    // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
+    let mut pidfile = match OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_CREAT | libc::O_EXCL)
+        .mode(PIDFILE_MODE)
+        .open(pidfile_name)
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            abort!("daemon already running with PID {}", pidfile_read(server));
+        }
+        Err(e) => abort!("can't create pidfile {}: {}", pidfile_name, e),
+    };
+
+    // Write pid to the pidfile.
+    if let Err(e) = write!(pidfile, "{}", getpid()) {
+        pidfile_remove(server);
+        abort!("pidfile write failed: {}", e);
+    };
+
+    server.pidfile_fd = pidfile.into_raw_fd();
 }
 
 const BASE64_TABLE: &[char] = &[
