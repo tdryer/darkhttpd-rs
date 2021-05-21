@@ -329,17 +329,18 @@ extern void httpd_poll(struct server *srv);
 
 /* Daemonize helpers. */
 #define PATH_DEVNULL "/dev/null"
-static int lifeline[2] = { -1, -1 };
-static int fd_null = -1;
 
-static void daemonize_start(void) {
+static void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null) {
     pid_t f;
 
+    int lifeline[2] = { -1, -1 };
     if (pipe(lifeline) == -1)
         err(1, "pipe(lifeline)");
+    *lifeline_read = lifeline[0];
+    *lifeline_write = lifeline[1];
 
-    fd_null = open(PATH_DEVNULL, O_RDWR, 0);
-    if (fd_null == -1)
+    *fd_null = open(PATH_DEVNULL, O_RDWR, 0);
+    if (*fd_null == -1)
         err(1, "open(" PATH_DEVNULL ")");
 
     f = fork();
@@ -351,9 +352,9 @@ static void daemonize_start(void) {
         int status;
         pid_t w;
 
-        if (close(lifeline[1]) == -1)
+        if (close(*lifeline_write) == -1)
             warn("close lifeline in parent");
-        if (read(lifeline[0], tmp, sizeof(tmp)) == -1)
+        if (read(*lifeline_read, tmp, sizeof(tmp)) == -1)
             warn("read lifeline in parent");
         w = waitpid(f, &status, WNOHANG);
         if (w == -1)
@@ -368,26 +369,26 @@ static void daemonize_start(void) {
     /* else we are the child: continue initializing */
 }
 
-static void daemonize_finish(void) {
-    if (fd_null == -1)
+static void daemonize_finish(int *lifeline_read, int *lifeline_write, int *fd_null) {
+    if (*fd_null == -1)
         return; /* didn't daemonize_start() so we're not daemonizing */
 
     if (setsid() == -1)
         err(1, "setsid");
-    if (close(lifeline[0]) == -1)
+    if (close(*lifeline_read) == -1)
         warn("close read end of lifeline in child");
-    if (close(lifeline[1]) == -1)
+    if (close(*lifeline_write) == -1)
         warn("couldn't cut the lifeline");
 
     /* close all our std fds */
-    if (dup2(fd_null, STDIN_FILENO) == -1)
+    if (dup2(*fd_null, STDIN_FILENO) == -1)
         warn("dup2(stdin)");
-    if (dup2(fd_null, STDOUT_FILENO) == -1)
+    if (dup2(*fd_null, STDOUT_FILENO) == -1)
         warn("dup2(stdout)");
-    if (dup2(fd_null, STDERR_FILENO) == -1)
+    if (dup2(*fd_null, STDERR_FILENO) == -1)
         warn("dup2(stderr)");
-    if (fd_null > 2)
-        close(fd_null);
+    if (*fd_null > 2)
+        close(*fd_null);
 }
 
 extern void pidfile_remove(struct server *srv);
@@ -429,8 +430,12 @@ int main(int argc, char **argv) {
             err(1, "opening logfile: fopen(\"%s\")", srv.logfile_name);
     }
 
+
+    int lifeline_read = -1;
+    int lifeline_write = -1;
+    int fd_null = -1;
     if (srv.want_daemon)
-        daemonize_start();
+        daemonize_start(&lifeline_read, &lifeline_write, &fd_null);
 
     /* signals */
     if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
@@ -468,7 +473,7 @@ int main(int argc, char **argv) {
     /* create pidfile */
     if (srv.pidfile_name) pidfile_create(&srv);
 
-    if (srv.want_daemon) daemonize_finish();
+    if (srv.want_daemon) daemonize_finish(&lifeline_read, &lifeline_write, &fd_null);
 
     /* main loop */
     while (is_running()) httpd_poll(&srv);
