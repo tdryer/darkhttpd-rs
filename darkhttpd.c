@@ -193,6 +193,7 @@ struct server {
     char *logfile_name;         /* NULL = no logging */
     FILE *logfile;
     char *pidfile_name;         /* NULL = no pidfile */
+    int pidfile_fd;
     int want_chroot;
     int want_daemon;
     int want_accf;
@@ -231,6 +232,7 @@ static struct server srv = {
     .logfile_name = NULL,
     .logfile = NULL,
     .pidfile_name = NULL,
+    .pidfile_fd = -1,
     .want_chroot = 0,
     .want_daemon = 0,
     .want_accf = 0,
@@ -391,38 +393,30 @@ static void daemonize_finish(void) {
 /* [->] pidfile helpers, based on FreeBSD src/lib/libutil/pidfile.c,v 1.3
  * Original was copyright (c) 2005 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  */
-static int pidfile_fd = -1;
 #define PIDFILE_MODE 0600
 
-static void pidfile_remove(void) {
-    if (unlink(srv.pidfile_name) == -1)
-        err(1, "unlink(pidfile) failed");
- /* if (flock(pidfile_fd, LOCK_UN) == -1)
-        err(1, "unlock(pidfile) failed"); */
-    xclose(pidfile_fd);
-    pidfile_fd = -1;
-}
+extern void pidfile_remove(struct server *srv);
 
 extern int pidfile_read(const struct server *srv);
 
-static void pidfile_create(void) {
+static void pidfile_create(struct server *srv) {
     int error, fd;
     char pidstr[16];
 
     /* Open the PID file and obtain exclusive lock. */
-    fd = open(srv.pidfile_name,
+    fd = open(srv->pidfile_name,
         O_WRONLY | O_CREAT | O_EXLOCK | O_TRUNC | O_NONBLOCK, PIDFILE_MODE);
     if (fd == -1) {
         if ((errno == EWOULDBLOCK) || (errno == EEXIST))
-            errx(1, "daemon already running with PID %d", pidfile_read(&srv));
+            errx(1, "daemon already running with PID %d", pidfile_read(srv));
         else
-            err(1, "can't create pidfile %s", srv.pidfile_name);
+            err(1, "can't create pidfile %s", srv->pidfile_name);
     }
-    pidfile_fd = fd;
+    srv->pidfile_fd = fd;
 
     if (ftruncate(fd, 0) == -1) {
         error = errno;
-        pidfile_remove();
+        pidfile_remove(srv);
         errno = error;
         err(1, "ftruncate() failed");
     }
@@ -430,7 +424,7 @@ static void pidfile_create(void) {
     snprintf(pidstr, sizeof(pidstr), "%d", (int)getpid());
     if (pwrite(fd, pidstr, strlen(pidstr), 0) != (ssize_t)strlen(pidstr)) {
         error = errno;
-        pidfile_remove();
+        pidfile_remove(srv);
         errno = error;
         err(1, "pwrite() failed");
     }
@@ -509,7 +503,7 @@ int main(int argc, char **argv) {
     }
 
     /* create pidfile */
-    if (srv.pidfile_name) pidfile_create();
+    if (srv.pidfile_name) pidfile_create(&srv);
 
     if (srv.want_daemon) daemonize_finish();
 
@@ -519,7 +513,7 @@ int main(int argc, char **argv) {
     /* clean exit */
     xclose(srv.sockin);
     if (srv.logfile != NULL) fclose(srv.logfile);
-    if (srv.pidfile_name) pidfile_remove();
+    if (srv.pidfile_name) pidfile_remove(&srv);
 
     /* free the mallocs */
     {

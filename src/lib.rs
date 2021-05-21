@@ -2,7 +2,7 @@ use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr, OsString};
-use std::fs::File;
+use std::fs::{remove_file, File};
 use std::io::{BufRead, Read};
 use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
@@ -19,7 +19,7 @@ use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
-use nix::unistd::{getuid, Gid, Group, Uid, User};
+use nix::unistd::{close, getuid, Gid, Group, Uid, User};
 
 mod bindings;
 
@@ -339,6 +339,24 @@ pub extern "C" fn pidfile_read(server: *const Server) -> libc::c_int {
         Ok(pid) => pid,
         Err(e) => abort!("invalid pidfile contents: {}", e),
     }
+}
+
+#[no_mangle]
+pub extern "C" fn pidfile_remove(server: *mut Server) {
+    let server = unsafe { server.as_mut().expect("server pointer is null") };
+    assert!(!server.pidfile_name.is_null());
+    let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
+        .to_str()
+        .unwrap();
+    assert!(server.pidfile_fd >= 0);
+
+    if let Err(e) = remove_file(pidfile_name) {
+        abort!("unlink(pidfile) failed: {}", e);
+    }
+    if let Err(e) = close(server.pidfile_fd) {
+        abort!("close(pidfile) failed: {}", e);
+    }
+    server.pidfile_fd = -1;
 }
 
 const BASE64_TABLE: &[char] = &[
