@@ -205,7 +205,6 @@ struct server {
     uint64_t total_out;
     int accepting;              /* set to 0 to stop accept()ing */
     int syslog_enabled;
-    volatile int running;       /* signal handler sets this to false */
     void *keep_alive_field;     /* used by Rust */
     void *mime_map;             /* used by Rust */
     uid_t drop_uid;
@@ -244,7 +243,6 @@ static struct server srv = {
     .total_out = 0,
     .accepting = 1,
     .syslog_enabled = 0,
-    .running = 1,
     .keep_alive_field = NULL,
     .mime_map = NULL,
     .drop_uid = INVALID_UID,
@@ -309,8 +307,6 @@ extern void init_forward_map(struct server *srv);
  * be NULL terminated.
  */
 extern void parse_default_extension_map(struct server *srv);
-
-extern void set_default_mimetype(struct server *srv, const char *mimetype);
 
 /* ---------------------------------------------------------------------------
  * Adds contents of specified file to mime_map list.
@@ -480,10 +476,9 @@ static void pidfile_create(void) {
 }
 /* [<-] end of pidfile helpers. */
 
-/* Close all sockets and FILEs and exit. */
-static void stop_running(int sig unused) {
-    srv.running = 0;
-}
+extern void stop_running(int sig);
+
+extern int is_running();
 
 /* Set the keep alive field. */
 extern void set_keep_alive_field(struct server *srv);
@@ -558,7 +553,7 @@ int main(int argc, char **argv) {
     if (srv.want_daemon) daemonize_finish();
 
     /* main loop */
-    while (srv.running) httpd_poll(&srv);
+    while (is_running()) httpd_poll(&srv);
 
     /* clean exit */
     xclose(srv.sockin);

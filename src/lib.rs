@@ -11,6 +11,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd};
 use std::ptr::null_mut;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use chrono::{Local, TimeZone, Utc};
 use nix::errno::Errno;
@@ -23,6 +24,18 @@ use nix::unistd::{getuid, Gid, Group, Uid, User};
 mod bindings;
 
 use bindings::server as Server;
+
+static RUNNING: AtomicBool = AtomicBool::new(true);
+
+#[no_mangle]
+pub extern "C" fn stop_running(_sig: libc::c_int) {
+    RUNNING.store(false, Ordering::Relaxed);
+}
+
+#[no_mangle]
+pub extern "C" fn is_running() -> libc::c_int {
+    RUNNING.load(Ordering::Relaxed) as libc::c_int
+}
 
 const DEFAULT_INDEX_NAME: &str = "index.html";
 
