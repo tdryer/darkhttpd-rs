@@ -318,26 +318,6 @@ extern void parse_extension_map_file(struct server *srv, const char *filename);
  */
 extern void init_sockin(struct server *srv);
 
-/* Returns 1 if string is a number, 0 otherwise.  Set num to NULL if
- * disinterested in value.
- */
-static int str_to_num(const char *str, long long *num) {
-    char *endptr;
-    long long n;
-
-    errno = 0;
-    n = strtoll(str, &endptr, 10);
-    if (*endptr != '\0')
-        return 0;
-    if (n == LLONG_MIN && errno == ERANGE)
-        return 0;
-    if (n == LLONG_MAX && errno == ERANGE)
-        return 0;
-    if (num != NULL)
-        *num = n;
-    return 1;
-}
-
 extern void parse_commandline(struct server *srv);
 
 /* Main loop of the httpd - a select() and then delegation to accept
@@ -423,26 +403,7 @@ static void pidfile_remove(void) {
     pidfile_fd = -1;
 }
 
-static int pidfile_read(void) {
-    char buf[16];
-    int fd, i;
-    long long pid;
-
-    fd = open(srv.pidfile_name, O_RDONLY);
-    if (fd == -1)
-        err(1, " after create failed");
-
-    i = (int)read(fd, buf, sizeof(buf) - 1);
-    if (i == -1)
-        err(1, "read from pidfile failed");
-    xclose(fd);
-    buf[i] = '\0';
-
-    if (!str_to_num(buf, &pid)) {
-        err(1, "invalid pidfile contents: \"%s\"", buf);
-    }
-    return (int)pid;
-}
+extern int pidfile_read(const struct server *srv);
 
 static void pidfile_create(void) {
     int error, fd;
@@ -453,7 +414,7 @@ static void pidfile_create(void) {
         O_WRONLY | O_CREAT | O_EXLOCK | O_TRUNC | O_NONBLOCK, PIDFILE_MODE);
     if (fd == -1) {
         if ((errno == EWOULDBLOCK) || (errno == EEXIST))
-            errx(1, "daemon already running with PID %d", pidfile_read());
+            errx(1, "daemon already running with PID %d", pidfile_read(&srv));
         else
             err(1, "can't create pidfile %s", srv.pidfile_name);
     }

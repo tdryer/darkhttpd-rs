@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::File;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
 };
@@ -317,6 +317,28 @@ pub extern "C" fn free_server_fields(server: *mut Server) {
     // free_keep_alive_field(&srv);
     assert!(!server.keep_alive_field.is_null());
     unsafe { Box::from_raw(server.keep_alive_field as *mut String) };
+}
+
+#[no_mangle]
+pub extern "C" fn pidfile_read(server: *const Server) -> libc::c_int {
+    let server = unsafe { server.as_ref().expect("server pointer is null") };
+    assert!(!server.pidfile_name.is_null());
+    let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
+        .to_str()
+        .unwrap();
+
+    let mut pidfile = match File::open(pidfile_name) {
+        Ok(file) => file,
+        Err(e) => abort!("failed to open pidfile: {}", e),
+    };
+    let mut buf = String::new();
+    if let Err(e) = pidfile.read_to_string(&mut buf) {
+        abort!("read from pidfile failed: {}", e);
+    }
+    match buf.parse() {
+        Ok(pid) => pid,
+        Err(e) => abort!("invalid pidfile contents: {}", e),
+    }
 }
 
 const BASE64_TABLE: &[char] = &[
