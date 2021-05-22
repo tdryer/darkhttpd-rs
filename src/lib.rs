@@ -27,8 +27,6 @@ use nix::unistd::{
     setuid, ForkResult, Gid, Group, Pid, Uid, User,
 };
 
-mod bindings;
-
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 extern "C" fn stop_running(_signal: libc::c_int) {
