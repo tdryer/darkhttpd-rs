@@ -318,8 +318,6 @@ extern void parse_commandline(struct server *srv);
 
 extern void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null);
 
-extern void stop_running(int sig);
-
 /* Set the keep alive field. */
 extern void set_keep_alive_field(struct server *srv);
 
@@ -357,14 +355,6 @@ int main(int argc, char **argv) {
     int fd_null = -1;
     if (srv.want_daemon)
         daemonize_start(&lifeline_read, &lifeline_write, &fd_null);
-
-    /* signals */
-    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR)
-        err(1, "signal(ignore SIGPIPE)");
-    if (signal(SIGINT, stop_running) == SIG_ERR)
-        err(1, "signal(SIGINT)");
-    if (signal(SIGTERM, stop_running) == SIG_ERR)
-        err(1, "signal(SIGTERM)");
 
     /* main loop */
     main_rust(&srv, &lifeline_read, &lifeline_write, &fd_null);

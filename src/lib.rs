@@ -17,6 +17,7 @@ use chrono::{Local, TimeZone, Utc};
 use nix::errno::Errno;
 use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
+use nix::sys::signal::{signal, SigHandler, Signal};
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
@@ -31,8 +32,7 @@ use bindings::server as Server;
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
-#[no_mangle]
-pub extern "C" fn stop_running(_sig: libc::c_int) {
+extern "C" fn stop_running(_signal: libc::c_int) {
     RUNNING.store(false, Ordering::Relaxed);
 }
 
@@ -119,6 +119,17 @@ pub extern "C" fn main_rust(
     fd_null: *mut libc::c_int,
 ) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    // install signal handlers
+    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigIgn) } {
+        abort!("signal(ignore SIGPIPE): {}", e);
+    }
+    if let Err(e) = unsafe { signal(Signal::SIGINT, SigHandler::Handler(stop_running)) } {
+        abort!("signal(SIGINT): {}", e);
+    }
+    if let Err(e) = unsafe { signal(Signal::SIGTERM, SigHandler::Handler(stop_running)) } {
+        abort!("signal(SIGTERM): {}", e);
+    }
 
     if server.want_chroot == 1 {
         // Force reading the local timezone before chroot makes this impossible.
