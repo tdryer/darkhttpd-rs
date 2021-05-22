@@ -25,15 +25,6 @@ fn wait_for_port(port: u16) -> bool {
     false
 }
 
-fn is_built() -> bool {
-    Command::new("make")
-        .args(&["--question"])
-        .output()
-        .expect("failed to run make")
-        .status
-        .success()
-}
-
 struct ScopedChild(Child);
 
 impl Drop for ScopedChild {
@@ -58,16 +49,12 @@ impl Server {
         Self::with_args(&[])
     }
     pub fn with_args(args: &[&str]) -> Self {
-        // Check that the darkhttpd binary is up to date. We don't actually build it here because
-        // test threads could race each other.
-        assert!(is_built(), "need to run `make` before running tests");
-
         let root = tempdir().expect("failed to create tempdir");
 
         // Get an unused port. Assumes the port won't be reused before we start darkhttpd.
         let port = get_unused_port().expect("failed to get unused port");
 
-        let child = Command::new("./darkhttpd")
+        let child = Command::new(env!("CARGO_BIN_EXE_darkhttpd"))
             .args(&[
                 root.path().to_str().expect("path is not valid UTF-8"),
                 "--port",

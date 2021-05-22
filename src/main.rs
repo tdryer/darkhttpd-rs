@@ -108,8 +108,7 @@ macro_rules! abort {
 const INVALID_UID: libc::uid_t = libc::uid_t::MAX;
 const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
 
-#[no_mangle]
-pub extern "C" fn main_rust() {
+fn main() {
     let mut server = Server::new();
 
     println!("{}, {}.", server.pkgname, server.copyright,);
@@ -916,16 +915,6 @@ impl<'a> std::fmt::Display for GeneratedOn<'a> {
         }
         Ok(())
     }
-}
-
-/// malloc that dies if it can't allocate.
-#[no_mangle]
-pub unsafe extern "C" fn xmalloc(size: libc::size_t) -> *mut libc::c_void {
-    let ptr = libc::malloc(size);
-    if ptr.is_null() {
-        abort!("can't allocate {} bytes", size)
-    }
-    ptr
 }
 
 /// Resolve //, /./, and /../ in a URL.
