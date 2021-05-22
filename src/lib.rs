@@ -21,7 +21,8 @@ use nix::sys::socket;
 use nix::sys::time::TimeVal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{
-    close, dup2, fork, getpid, getuid, pipe, read, setsid, ForkResult, Gid, Group, Pid, Uid, User,
+    close, dup2, fork, getpid, getuid, pipe, read, setgid, setgroups, setsid, setuid, ForkResult,
+    Gid, Group, Pid, Uid, User,
 };
 
 mod bindings;
@@ -107,6 +108,9 @@ macro_rules! abort {
     })
 }
 
+const INVALID_UID: libc::uid_t = libc::uid_t::MAX;
+const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
+
 #[no_mangle]
 pub extern "C" fn main_rust(
     server: *mut Server,
@@ -115,6 +119,25 @@ pub extern "C" fn main_rust(
     fd_null: *mut libc::c_int,
 ) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    if server.drop_gid != INVALID_GID {
+        let gid = Gid::from_raw(server.drop_gid);
+        if let Err(e) = setgroups(&[gid]) {
+            abort!("setgroups([{}]): {}", gid, e);
+        }
+        if let Err(e) = setgid(gid) {
+            abort!("setgid({}): {}", gid, e);
+        }
+        println!("set gid to {}", gid);
+    }
+
+    if server.drop_uid != INVALID_UID {
+        let uid = Uid::from_raw(server.drop_uid);
+        if let Err(e) = setuid(uid) {
+            abort!("setgid({}): {}", uid, e);
+        }
+        println!("set uid to {}", uid);
+    }
 
     if !server.pidfile_name.is_null() {
         pidfile_create(server);

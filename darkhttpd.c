@@ -376,20 +376,6 @@ int main(int argc, char **argv) {
         printf("chrooted to `%s'\n", srv.wwwroot);
         srv.wwwroot[0] = '\0'; /* empty string */
     }
-    if (srv.drop_gid != INVALID_GID) {
-        gid_t list[1];
-        list[0] = srv.drop_gid;
-        if (setgroups(1, list) == -1)
-            err(1, "setgroups([%d])", (int)srv.drop_gid);
-        if (setgid(srv.drop_gid) == -1)
-            err(1, "setgid(%d)", (int)srv.drop_gid);
-        printf("set gid to %d\n", (int)srv.drop_gid);
-    }
-    if (srv.drop_uid != INVALID_UID) {
-        if (setuid(srv.drop_uid) == -1)
-            err(1, "setuid(%d)", (int)srv.drop_uid);
-        printf("set uid to %d\n", (int)srv.drop_uid);
-    }
 
     /* main loop */
     main_rust(&srv, &lifeline_read, &lifeline_write, &fd_null);
