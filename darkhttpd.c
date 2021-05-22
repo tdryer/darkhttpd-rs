@@ -316,15 +316,13 @@ extern void init_sockin(struct server *srv);
 
 extern void parse_commandline(struct server *srv);
 
-extern void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null);
-
 /* Set the keep alive field. */
 extern void set_keep_alive_field(struct server *srv);
 
 /* Initialize connections list. */
 extern void init_connections_list(struct server *srv);
 
-extern void main_rust(struct server *srv, int *lifeline_read, int * lifeline_write, int *fd_null);
+extern void main_rust(struct server *srv);
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
@@ -349,15 +347,8 @@ int main(int argc, char **argv) {
             err(1, "opening logfile: fopen(\"%s\")", srv.logfile_name);
     }
 
-
-    int lifeline_read = -1;
-    int lifeline_write = -1;
-    int fd_null = -1;
-    if (srv.want_daemon)
-        daemonize_start(&lifeline_read, &lifeline_write, &fd_null);
-
     /* main loop */
-    main_rust(&srv, &lifeline_read, &lifeline_write, &fd_null);
+    main_rust(&srv);
 
     /* usage stats */
     {

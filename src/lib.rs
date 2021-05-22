@@ -112,13 +112,15 @@ const INVALID_UID: libc::uid_t = libc::uid_t::MAX;
 const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
 
 #[no_mangle]
-pub extern "C" fn main_rust(
-    server: *mut Server,
-    lifeline_read: *mut libc::c_int,
-    lifeline_write: *mut libc::c_int,
-    fd_null: *mut libc::c_int,
-) {
+pub extern "C" fn main_rust(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    let mut lifeline_read = -1;
+    let mut lifeline_write = -1;
+    let mut fd_null = -1;
+    if server.want_daemon == 1 {
+        daemonize_start(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
+    }
 
     // install signal handlers
     if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigIgn) } {
@@ -174,7 +176,7 @@ pub extern "C" fn main_rust(
     }
 
     if server.want_daemon == 1 {
-        daemonize_finish(lifeline_read, lifeline_write, fd_null);
+        daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
     }
 
     // main loop
@@ -482,15 +484,12 @@ fn pidfile_create(server: &mut Server) {
 
 const PATH_DEVNULL: &str = "/dev/null";
 
-#[no_mangle]
-pub extern "C" fn daemonize_start(
-    lifeline_read: *mut libc::c_int,
-    lifeline_write: *mut libc::c_int,
-    fd_null: *mut libc::c_int,
+fn daemonize_start(
+    lifeline_read: &mut libc::c_int,
+    lifeline_write: &mut libc::c_int,
+    fd_null: &mut libc::c_int,
 ) {
     // create lifeline pipe
-    let lifeline_read = unsafe { lifeline_read.as_mut() }.expect("lifeline_read is null");
-    let lifeline_write = unsafe { lifeline_write.as_mut() }.expect("lifeline_write is null");
     match pipe() {
         Ok((read, write)) => {
             *lifeline_read = read;
@@ -500,7 +499,6 @@ pub extern "C" fn daemonize_start(
     }
 
     // populate fd_null
-    let fd_null = unsafe { fd_null.as_mut() }.expect("fd_null is null");
     *fd_null = match OpenOptions::new().read(true).write(true).open(PATH_DEVNULL) {
         Ok(file) => file.into_raw_fd(),
         Err(e) => abort!("open {} failed: {}", PATH_DEVNULL, e),
@@ -530,14 +528,10 @@ pub extern "C" fn daemonize_start(
 }
 
 fn daemonize_finish(
-    lifeline_read: *mut libc::c_int,
-    lifeline_write: *mut libc::c_int,
-    fd_null: *mut libc::c_int,
+    lifeline_read: &mut libc::c_int,
+    lifeline_write: &mut libc::c_int,
+    fd_null: &mut libc::c_int,
 ) {
-    let lifeline_read = unsafe { lifeline_read.as_mut() }.expect("lifeline_read is null");
-    let lifeline_write = unsafe { lifeline_write.as_mut() }.expect("lifeline_write is null");
-    let fd_null = unsafe { fd_null.as_mut() }.expect("fd_null is null");
-
     if let Err(e) = setsid() {
         abort!("setsid failed: {}", e);
     }
