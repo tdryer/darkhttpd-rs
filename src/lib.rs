@@ -4,6 +4,7 @@ use std::convert::{TryFrom, TryInto};
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{remove_file, File, OpenOptions};
 use std::io::{BufRead, Read, Write};
+use std::mem::MaybeUninit;
 use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
 };
@@ -242,6 +243,33 @@ pub extern "C" fn main_rust(server: *mut Server) {
     // free memory
     unsafe { CString::from_raw(server.server_hdr) };
     free_server_fields(server);
+
+    // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
+    // will be closed. It's not clear whether this was intentional.
+    if !server.logfile.is_null() {
+        let rusage = match getrusage() {
+            Ok(rusage) => rusage,
+            Err(e) => abort!("getrusage failed: {}", e),
+        };
+        println!(
+            "CPU time used: {}.{:02} user, {}.{:02} system",
+            rusage.ru_utime.tv_sec,
+            rusage.ru_utime.tv_usec / 10000,
+            rusage.ru_stime.tv_sec,
+            rusage.ru_stime.tv_usec / 10000,
+        );
+        println!("Requests: {}", server.num_requests);
+        println!("Bytes: {} in, {} out", server.total_in, server.total_out);
+    }
+}
+
+/// Safe wrapper for `libc::getrusage`.
+fn getrusage() -> std::io::Result<libc::rusage> {
+    let mut rusage = MaybeUninit::<libc::rusage>::zeroed();
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, rusage.as_mut_ptr()) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { rusage.assume_init() })
 }
 
 fn parse_num<T: FromStr>(number: &str) -> Result<T, String> {

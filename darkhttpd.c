@@ -256,22 +256,6 @@ extern void main_rust(struct server *srv);
 /* Execution starts here. */
 int main(int argc, char **argv) {
     main_rust(&srv);
-
-    /* usage stats */
-    {
-        struct rusage r;
-
-        getrusage(RUSAGE_SELF, &r);
-        printf("CPU time used: %u.%02u user, %u.%02u system\n",
-            (unsigned int)r.ru_utime.tv_sec,
-                (unsigned int)(r.ru_utime.tv_usec/10000),
-            (unsigned int)r.ru_stime.tv_sec,
-                (unsigned int)(r.ru_stime.tv_usec/10000)
-        );
-        printf("Requests: %llu\n", llu(srv.num_requests));
-        printf("Bytes: %llu in, %llu out\n", llu(srv.total_in), llu(srv.total_out));
-    }
-
     return 0;
 }
 
