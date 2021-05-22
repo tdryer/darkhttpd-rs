@@ -98,6 +98,15 @@ fn usage(server: &Server, argv0: &str) {
     );
 }
 
+/// Prints message to standard error and exits with code 1.
+macro_rules! abort {
+    ($($arg:tt)*) => ({
+        eprint!("{}: ", env!("CARGO_PKG_NAME"));
+        eprintln!($($arg)*);
+        std::process::exit(1);
+    })
+}
+
 #[no_mangle]
 pub extern "C" fn main_rust(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
@@ -106,15 +115,19 @@ pub extern "C" fn main_rust(server: *mut Server) {
     while is_running() {
         httpd_poll(server);
     }
-}
 
-/// Prints message to standard error and exits with code 1.
-macro_rules! abort {
-    ($($arg:tt)*) => ({
-        eprint!("{}: ", env!("CARGO_PKG_NAME"));
-        eprintln!($($arg)*);
-        std::process::exit(1);
-    })
+    // clean exit
+    if let Err(e) = close(server.sockin) {
+        abort!("failed to close listening socket: {}", e);
+    };
+    if !server.logfile.is_null() {
+        if unsafe { libc::fclose(server.logfile as *mut libc::FILE) } == libc::EOF {
+            abort!("failed to close log file");
+        }
+    }
+    if !server.pidfile_name.is_null() {
+        pidfile_remove(server);
+    }
 }
 
 fn parse_num<T: FromStr>(number: &str) -> Result<T, String> {
@@ -351,9 +364,7 @@ fn pidfile_read(server: &Server) -> Pid {
     })
 }
 
-#[no_mangle]
-pub extern "C" fn pidfile_remove(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+fn pidfile_remove(server: &mut Server) {
     assert!(!server.pidfile_name.is_null());
     let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
         .to_str()

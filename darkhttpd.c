@@ -251,12 +251,6 @@ static struct server srv = {
     .drop_gid = INVALID_GID,
 };
 
-/* close() that dies on error.  */
-static void xclose(const int fd) {
-    if (close(fd) == -1)
-        err(1, "close()");
-}
-
 /* malloc that dies if it can't allocate. */
 extern void *xmalloc(const size_t size);
 
@@ -325,8 +319,6 @@ extern void parse_commandline(struct server *srv);
 extern void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null);
 
 extern void daemonize_finish(int *lifeline_read, int *lifeline_write, int *fd_null);
-
-extern void pidfile_remove(struct server *srv);
 
 extern void pidfile_create(struct server *srv);
 
@@ -412,11 +404,6 @@ int main(int argc, char **argv) {
 
     /* main loop */
     main_rust(&srv);
-
-    /* clean exit */
-    xclose(srv.sockin);
-    if (srv.logfile != NULL) fclose(srv.logfile);
-    if (srv.pidfile_name) pidfile_remove(&srv);
 
     /* free the mallocs */
     {
