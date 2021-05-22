@@ -115,6 +115,21 @@ const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
 pub extern "C" fn main_rust(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
 
+    // open logfile
+    if !server.logfile_name.is_null() {
+        let mode = CString::new("ab").unwrap();
+        server.logfile = unsafe {
+            libc::fopen(server.logfile_name, mode.as_c_str().as_ptr()) as *mut bindings::_IO_FILE
+        };
+        if server.logfile.is_null() {
+            // TODO: add errno / error description
+            let logfile_name = unsafe { CStr::from_ptr(server.logfile_name) }
+                .to_str()
+                .unwrap();
+            abort!("opening logfile: fopen(\"{}\")", logfile_name);
+        }
+    }
+
     let mut lifeline_read = -1;
     let mut lifeline_write = -1;
     let mut fd_null = -1;
@@ -1777,9 +1792,6 @@ impl<'a> std::fmt::Display for LogEncoded<'a> {
 
 /// Add a connection's details to the logfile.
 fn log_connection(server: &Server, conn: &Connection) {
-    if server.logfile.is_null() {
-        return;
-    }
     if conn.http_code == 0 {
         return; // invalid - died in request
     }
@@ -1806,6 +1818,8 @@ fn log_connection(server: &Server, conn: &Connection) {
         unsafe {
             libc::syslog(libc::LOG_INFO, message.as_c_str().as_ptr());
         }
+    } else if server.logfile.is_null() {
+        print!("{}", message.into_string().unwrap());
     } else {
         unsafe {
             libc::fprintf(

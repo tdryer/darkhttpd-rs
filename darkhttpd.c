@@ -338,15 +338,6 @@ int main(int argc, char **argv) {
         srv.server_hdr = xstrdup("");
     init_sockin(&srv);
 
-    /* open logfile */
-    if (srv.logfile_name == NULL)
-        srv.logfile = stdout;
-    else {
-        srv.logfile = fopen(srv.logfile_name, "ab");
-        if (srv.logfile == NULL)
-            err(1, "opening logfile: fopen(\"%s\")", srv.logfile_name);
-    }
-
     /* main loop */
     main_rust(&srv);
 
