@@ -108,8 +108,21 @@ macro_rules! abort {
 }
 
 #[no_mangle]
-pub extern "C" fn main_rust(server: *mut Server) {
+pub extern "C" fn main_rust(
+    server: *mut Server,
+    lifeline_read: *mut libc::c_int,
+    lifeline_write: *mut libc::c_int,
+    fd_null: *mut libc::c_int,
+) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    if !server.pidfile_name.is_null() {
+        pidfile_create(server);
+    }
+
+    if server.want_daemon == 1 {
+        daemonize_finish(lifeline_read, lifeline_write, fd_null);
+    }
 
     // main loop
     while is_running() {
@@ -128,6 +141,10 @@ pub extern "C" fn main_rust(server: *mut Server) {
     if !server.pidfile_name.is_null() {
         pidfile_remove(server);
     }
+
+    // free memory
+    unsafe { libc::free(server.server_hdr as *mut libc::c_void) };
+    free_server_fields(server);
 }
 
 fn parse_num<T: FromStr>(number: &str) -> Result<T, String> {
@@ -289,10 +306,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
 }
 
 /// Free server struct fields.
-#[no_mangle]
-pub extern "C" fn free_server_fields(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-
+fn free_server_fields(server: &mut Server) {
     assert!(!server.wwwroot.is_null());
     unsafe { CString::from_raw(server.wwwroot) };
     server.wwwroot = null_mut();
@@ -382,9 +396,7 @@ fn pidfile_remove(server: &mut Server) {
 
 const PIDFILE_MODE: u32 = 0o600;
 
-#[no_mangle]
-pub extern "C" fn pidfile_create(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+fn pidfile_create(server: &mut Server) {
     assert!(!server.pidfile_name.is_null());
     let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
         .to_str()
@@ -464,8 +476,7 @@ pub extern "C" fn daemonize_start(
     }
 }
 
-#[no_mangle]
-pub extern "C" fn daemonize_finish(
+fn daemonize_finish(
     lifeline_read: *mut libc::c_int,
     lifeline_write: *mut libc::c_int,
     fd_null: *mut libc::c_int,

@@ -318,10 +318,6 @@ extern void parse_commandline(struct server *srv);
 
 extern void daemonize_start(int *lifeline_read, int * lifeline_write, int *fd_null);
 
-extern void daemonize_finish(int *lifeline_read, int *lifeline_write, int *fd_null);
-
-extern void pidfile_create(struct server *srv);
-
 extern void stop_running(int sig);
 
 /* Set the keep alive field. */
@@ -330,9 +326,7 @@ extern void set_keep_alive_field(struct server *srv);
 /* Initialize connections list. */
 extern void init_connections_list(struct server *srv);
 
-extern void free_server_fields(struct server *srv);
-
-extern void main_rust(struct server *srv);
+extern void main_rust(struct server *srv, int *lifeline_read, int * lifeline_write, int *fd_null);
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
@@ -397,20 +391,8 @@ int main(int argc, char **argv) {
         printf("set uid to %d\n", (int)srv.drop_uid);
     }
 
-    /* create pidfile */
-    if (srv.pidfile_name) pidfile_create(&srv);
-
-    if (srv.want_daemon) daemonize_finish(&lifeline_read, &lifeline_write, &fd_null);
-
     /* main loop */
-    main_rust(&srv);
-
-    /* free the mallocs */
-    {
-        free(srv.server_hdr);
-    }
-
-    free_server_fields(&srv);
+    main_rust(&srv, &lifeline_read, &lifeline_write, &fd_null);
 
     /* usage stats */
     {
