@@ -21,8 +21,8 @@ use nix::sys::socket;
 use nix::sys::time::TimeVal;
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::unistd::{
-    close, dup2, fork, getpid, getuid, pipe, read, setgid, setgroups, setsid, setuid, ForkResult,
-    Gid, Group, Pid, Uid, User,
+    chdir, chroot, close, dup2, fork, getpid, getuid, pipe, read, setgid, setgroups, setsid,
+    setuid, ForkResult, Gid, Group, Pid, Uid, User,
 };
 
 mod bindings;
@@ -119,6 +119,25 @@ pub extern "C" fn main_rust(
     fd_null: *mut libc::c_int,
 ) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
+
+    if server.want_chroot == 1 {
+        // Force reading the local timezone before chroot makes this impossible.
+        Local::now();
+
+        let wwwroot = unsafe { CStr::from_ptr(server.wwwroot) }.to_str().unwrap();
+        if let Err(e) = chdir(wwwroot) {
+            abort!("chdir({}): {}", wwwroot, e);
+        }
+        if let Err(e) = chroot(wwwroot) {
+            abort!("chroot({}): {}", wwwroot, e);
+        }
+        println!("chrooted to `{}'", wwwroot);
+
+        // replace wwwroot with empty string
+        drop(wwwroot);
+        unsafe { CString::from_raw(server.wwwroot) };
+        server.wwwroot = CString::new("").unwrap().into_raw();
+    }
 
     if server.drop_gid != INVALID_GID {
         let gid = Gid::from_raw(server.drop_gid);

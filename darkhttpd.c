@@ -366,17 +366,6 @@ int main(int argc, char **argv) {
     if (signal(SIGTERM, stop_running) == SIG_ERR)
         err(1, "signal(SIGTERM)");
 
-    /* security */
-    if (srv.want_chroot) {
-        tzset(); /* read /etc/localtime before we chroot */
-        if (chdir(srv.wwwroot) == -1)
-            err(1, "chdir(%s)", srv.wwwroot);
-        if (chroot(srv.wwwroot) == -1)
-            err(1, "chroot(%s)", srv.wwwroot);
-        printf("chrooted to `%s'\n", srv.wwwroot);
-        srv.wwwroot[0] = '\0'; /* empty string */
-    }
-
     /* main loop */
     main_rust(&srv, &lifeline_read, &lifeline_write, &fd_null);
 
