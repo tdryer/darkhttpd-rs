@@ -29,8 +29,6 @@ use nix::unistd::{
 
 mod bindings;
 
-use bindings::server as Server;
-
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
 extern "C" fn stop_running(_signal: libc::c_int) {
@@ -113,41 +111,31 @@ const INVALID_UID: libc::uid_t = libc::uid_t::MAX;
 const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
 
 #[no_mangle]
-pub extern "C" fn main_rust(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+pub extern "C" fn main_rust() {
+    let mut server = Server::new();
 
-    println!(
-        "{}, {}.",
-        unsafe { CStr::from_ptr(server.pkgname) }.to_str().unwrap(),
-        unsafe { CStr::from_ptr(server.copyright) }
-            .to_str()
-            .unwrap()
-    );
-    init_connections_list(server);
-    init_forward_map(server);
-    parse_default_extension_map(server);
-    parse_commandline(server);
-    set_keep_alive_field(server);
+    println!("{}, {}.", server.pkgname, server.copyright,);
+    init_connections_list(&mut server);
+    init_forward_map(&mut server);
+    parse_default_extension_map(&mut server);
+    parse_commandline(&mut server);
+    set_keep_alive_field(&mut server);
 
     let server_hdr = if server.want_server_id == 1 {
-        assert!(!server.pkgname.is_null());
-        format!(
-            "Server: {}\r\n",
-            unsafe { CStr::from_ptr(server.pkgname) }.to_str().unwrap()
-        )
+        format!("Server: {}\r\n", server.pkgname)
     } else {
         String::new()
     };
     // freed later in this function
     server.server_hdr = CString::new(server_hdr).unwrap().into_raw();
 
-    init_sockin(server);
+    init_sockin(&mut server);
 
     // open logfile
     if !server.logfile_name.is_null() {
         let mode = CString::new("ab").unwrap();
         server.logfile = unsafe {
-            libc::fopen(server.logfile_name, mode.as_c_str().as_ptr()) as *mut bindings::_IO_FILE
+            libc::fopen(server.logfile_name, mode.as_c_str().as_ptr()) as *mut libc::FILE
         };
         if server.logfile.is_null() {
             // TODO: add errno / error description
@@ -215,7 +203,7 @@ pub extern "C" fn main_rust(server: *mut Server) {
     }
 
     if !server.pidfile_name.is_null() {
-        pidfile_create(server);
+        pidfile_create(&mut server);
     }
 
     if server.want_daemon == 1 {
@@ -224,7 +212,7 @@ pub extern "C" fn main_rust(server: *mut Server) {
 
     // main loop
     while is_running() {
-        httpd_poll(server);
+        httpd_poll(&mut server);
     }
 
     // clean exit
@@ -237,12 +225,12 @@ pub extern "C" fn main_rust(server: *mut Server) {
         }
     }
     if !server.pidfile_name.is_null() {
-        pidfile_remove(server);
+        pidfile_remove(&mut server);
     }
 
     // free memory
     unsafe { CString::from_raw(server.server_hdr) };
-    free_server_fields(server);
+    free_server_fields(&mut server);
 
     // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
     // will be closed. It's not clear whether this was intentional.
@@ -260,6 +248,86 @@ pub extern "C" fn main_rust(server: *mut Server) {
         );
         println!("Requests: {}", server.num_requests);
         println!("Bytes: {} in, {} out", server.total_in, server.total_out);
+    }
+}
+
+#[derive(Debug)]
+pub struct Server {
+    pkgname: &'static str,
+    copyright: &'static str,
+    connections: *mut libc::c_void,
+    forward_map: *mut libc::c_void,
+    forward_all_url: *const libc::c_char,
+    timeout_secs: libc::c_int,
+    bindaddr: *mut libc::c_char,
+    bindport: u16,
+    max_connections: libc::c_int,
+    index_name: *mut libc::c_char,
+    no_listing: libc::c_int,
+    sockin: libc::c_int,
+    now: libc::time_t,
+    inet6: libc::c_int,
+    wwwroot: *mut libc::c_char,
+    logfile_name: *mut libc::c_char,
+    logfile: *mut libc::FILE,
+    pidfile_name: *mut libc::c_char,
+    pidfile_fd: libc::c_int,
+    want_chroot: libc::c_int,
+    want_daemon: libc::c_int,
+    want_accf: libc::c_int,
+    want_keepalive: libc::c_int,
+    want_server_id: libc::c_int,
+    server_hdr: *mut libc::c_char,
+    auth_key: *mut libc::c_char,
+    num_requests: u64,
+    total_in: u64,
+    total_out: u64,
+    accepting: libc::c_int,
+    syslog_enabled: libc::c_int,
+    keep_alive_field: *mut libc::c_void,
+    mime_map: *mut libc::c_void,
+    drop_uid: libc::uid_t,
+    drop_gid: libc::gid_t,
+}
+impl Server {
+    fn new() -> Self {
+        Self {
+            pkgname: "darkhttpd/1.13.from.git",
+            copyright: "copyright (c) 2003-2021 Emil Mikulic",
+            connections: null_mut(),
+            forward_map: null_mut(),
+            forward_all_url: null_mut(),
+            timeout_secs: 30,
+            bindaddr: null_mut(),
+            bindport: 8080,      /* or 80 if running as root */
+            max_connections: -1, /* kern.ipc.somaxconn */
+            index_name: null_mut(),
+            no_listing: 0,
+            sockin: -1,
+            now: 0,
+            inet6: 0,
+            wwwroot: null_mut(),
+            logfile_name: null_mut(),
+            logfile: null_mut(),
+            pidfile_name: null_mut(),
+            pidfile_fd: -1,
+            want_chroot: 0,
+            want_daemon: 0,
+            want_accf: 0,
+            want_keepalive: 1,
+            want_server_id: 1,
+            server_hdr: null_mut(),
+            auth_key: null_mut(),
+            num_requests: 0,
+            total_in: 0,
+            total_out: 0,
+            accepting: 1,
+            syslog_enabled: 0,
+            keep_alive_field: null_mut(),
+            mime_map: null_mut(),
+            drop_uid: INVALID_UID,
+            drop_gid: INVALID_GID,
+        }
     }
 }
 
@@ -844,10 +912,9 @@ struct GeneratedOn<'a>(&'a Server);
 
 impl<'a> std::fmt::Display for GeneratedOn<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let pkgname = unsafe { CStr::from_ptr(self.0.pkgname).to_str().unwrap() };
         let date = HttpDate(self.0.now);
         if self.0.want_server_id == 1 {
-            write!(f, "Generated by {} on {}\n", pkgname, date)?;
+            write!(f, "Generated by {} on {}\n", self.0.pkgname, date)?;
         }
         Ok(())
     }
@@ -1767,7 +1834,7 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
     assert_eq!(conn.state, ConnectionState::ReceiveRequest);
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
-    let recvd = bindings::size_t::try_from(
+    let recvd = u64::try_from(
         match socket::recv(
             conn.socket.as_ref().unwrap().as_raw_fd(),
             &mut buf,

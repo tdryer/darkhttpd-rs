@@ -17,10 +17,6 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 
-static const char
-    pkgname[]   = "darkhttpd/1.13.from.git",
-    copyright[] = "copyright (c) 2003-2021 Emil Mikulic";
-
 /* Possible build options: -DDEBUG -DNO_IPV6 */
 
 #ifndef NO_IPV6
@@ -160,102 +156,11 @@ static void warn(const char *format, ...) {
 }
 #endif
 
-#define INVALID_UID ((uid_t) -1)
-#define INVALID_GID ((gid_t) -1)
-
-struct connection; /* defined by Rust */
-
-/* Container for mutable static variables. */
-struct server {
-    const char *pkgname;
-    const char *copyright;
-    void *connections;          /* used by Rust */
-    void *forward_map;          /* used by Rust */
-    const char *forward_all_url;
-    /* If a connection is idle for timeout_secs or more, it gets closed and
-     * removed from the connlist.
-     */
-    int timeout_secs;
-    char *bindaddr;
-    uint16_t bindport;
-    int max_connections;
-    char *index_name;
-    int no_listing;
-    int sockin; /* socket to accept connections from */
-    /* Time is cached in the event loop to avoid making an excessive number of
-     * gettimeofday() calls.
-     */
-    time_t now;
-#ifdef HAVE_INET6
-    int inet6;                  /* whether the socket uses inet6 */
-#endif
-    char *wwwroot;              /* a path name */
-    char *logfile_name;         /* NULL = no logging */
-    FILE *logfile;
-    char *pidfile_name;         /* NULL = no pidfile */
-    int pidfile_fd;
-    int want_chroot;
-    int want_daemon;
-    int want_accf;
-    int want_keepalive;
-    int want_server_id;
-    char *server_hdr;
-    char *auth_key;
-    uint64_t num_requests;
-    uint64_t total_in;
-    uint64_t total_out;
-    int accepting;              /* set to 0 to stop accept()ing */
-    int syslog_enabled;
-    void *keep_alive_field;     /* used by Rust */
-    void *mime_map;             /* used by Rust */
-    uid_t drop_uid;
-    gid_t drop_gid;
-};
-
-static struct server srv = {
-    .pkgname = pkgname,
-    .copyright = copyright,
-    .forward_map = NULL,
-    .forward_all_url = NULL,
-    .timeout_secs = 30,
-    .bindaddr = NULL,
-    .bindport = 8080,           /* or 80 if running as root */
-    .max_connections = -1,      /* kern.ipc.somaxconn */
-    .index_name = NULL,
-    .no_listing = 0,
-    .sockin = -1,
-    .now = 0,
-#ifdef HAVE_INET6
-    .inet6 = 0,
-#endif
-    .wwwroot = NULL,
-    .logfile_name = NULL,
-    .logfile = NULL,
-    .pidfile_name = NULL,
-    .pidfile_fd = -1,
-    .want_chroot = 0,
-    .want_daemon = 0,
-    .want_accf = 0,
-    .want_keepalive = 1,
-    .want_server_id = 1,
-    .server_hdr = NULL,
-    .auth_key = NULL,
-    .num_requests = 0,
-    .total_in = 0,
-    .total_out = 0,
-    .accepting = 1,
-    .syslog_enabled = 0,
-    .keep_alive_field = NULL,
-    .mime_map = NULL,
-    .drop_uid = INVALID_UID,
-    .drop_gid = INVALID_GID,
-};
-
-extern void main_rust(struct server *srv);
+extern void main_rust();
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
-    main_rust(&srv);
+    main_rust();
     return 0;
 }
 
