@@ -251,51 +251,10 @@ static struct server srv = {
     .drop_gid = INVALID_GID,
 };
 
-/* malloc that dies if it can't allocate. */
-extern void *xmalloc(const size_t size);
-
-#ifdef __sun /* unimpressed by Solaris */
-static int vasprintf(char **strp, const char *fmt, va_list ap) {
-    char tmp;
-    int result = vsnprintf(&tmp, 1, fmt, ap);
-    *strp = xmalloc(result+1);
-    result = vsnprintf(*strp, result+1, fmt, ap);
-    return result;
-}
-#endif
-
-extern void init_forward_map(struct server *srv);
-
-/* Adds contents of default_extension_map[] to mime_map list.  The array must
- * be NULL terminated.
- */
-extern void parse_default_extension_map(struct server *srv);
-
-/* ---------------------------------------------------------------------------
- * Adds contents of specified file to mime_map list.
- */
-extern void parse_extension_map_file(struct server *srv, const char *filename);
-
-extern void parse_commandline(struct server *srv);
-
-/* Set the keep alive field. */
-extern void set_keep_alive_field(struct server *srv);
-
-/* Initialize connections list. */
-extern void init_connections_list(struct server *srv);
-
 extern void main_rust(struct server *srv);
 
 /* Execution starts here. */
 int main(int argc, char **argv) {
-    printf("%s, %s.\n", srv.pkgname, srv.copyright);
-    init_connections_list(&srv);
-    init_forward_map(&srv);
-    parse_default_extension_map(&srv);
-    parse_commandline(&srv);
-    set_keep_alive_field(&srv);
-
-    /* main loop */
     main_rust(&srv);
 
     /* usage stats */

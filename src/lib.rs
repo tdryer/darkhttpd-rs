@@ -115,6 +115,19 @@ const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
 pub extern "C" fn main_rust(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
 
+    println!(
+        "{}, {}.",
+        unsafe { CStr::from_ptr(server.pkgname) }.to_str().unwrap(),
+        unsafe { CStr::from_ptr(server.copyright) }
+            .to_str()
+            .unwrap()
+    );
+    init_connections_list(server);
+    init_forward_map(server);
+    parse_default_extension_map(server);
+    parse_commandline(server);
+    set_keep_alive_field(server);
+
     let server_hdr = if server.want_server_id == 1 {
         assert!(!server.pkgname.is_null());
         format!(
@@ -237,9 +250,7 @@ fn parse_num<T: FromStr>(number: &str) -> Result<T, String> {
         .map_err(|_| format!("number {} is invalid", number))?)
 }
 
-#[no_mangle]
-pub extern "C" fn parse_commandline(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+fn parse_commandline(server: &mut Server) {
     if let Err(e) = parse_commandline_rust(server) {
         abort!("{}", e);
     }
@@ -664,9 +675,7 @@ enum ConnectionReplyType {
 
 type ForwardMap = HashMap<String, String>;
 
-#[no_mangle]
-pub extern "C" fn init_forward_map(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+fn init_forward_map(server: &mut Server) {
     assert!(server.forward_map.is_null());
     // freed by `free_server_fields`
     server.forward_map = Box::into_raw(Box::new(ForwardMap::new())) as *mut libc::c_void;
@@ -754,9 +763,7 @@ impl MimeMap {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn parse_default_extension_map(server: *mut Server) {
-    let server = unsafe { server.as_mut().unwrap() };
+fn parse_default_extension_map(server: &mut Server) {
     let mime_map = MimeMap::parse_default_extension_map();
     assert!(server.mime_map.is_null());
     // freed by `free_server_fields`
@@ -764,9 +771,7 @@ pub extern "C" fn parse_default_extension_map(server: *mut Server) {
 }
 
 /// Set the keep alive field.
-#[no_mangle]
-pub extern "C" fn set_keep_alive_field(server: *mut Server) {
-    let server = unsafe { server.as_mut().unwrap() };
+fn set_keep_alive_field(server: &mut Server) {
     assert!(server.keep_alive_field.is_null());
     let keep_alive = format!("Keep-Alive: timeout={}\r\n", server.timeout_secs);
     // freed by `free_server_fields`
@@ -1915,9 +1920,7 @@ fn new_connection(server: &Server, stream: TcpStream, client: IpAddr) -> Connect
 }
 
 /// Initialize connections list.
-#[no_mangle]
-pub extern "C" fn init_connections_list(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
+fn init_connections_list(server: &mut Server) {
     assert!(server.connections.is_null());
     let connections: Vec<Connection> = Vec::new();
     // freed by `free_server_fields`
