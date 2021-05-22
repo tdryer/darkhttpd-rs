@@ -115,6 +115,20 @@ const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
 pub extern "C" fn main_rust(server: *mut Server) {
     let server = unsafe { server.as_mut().expect("server pointer is null") };
 
+    let server_hdr = if server.want_server_id == 1 {
+        assert!(!server.pkgname.is_null());
+        format!(
+            "Server: {}\r\n",
+            unsafe { CStr::from_ptr(server.pkgname) }.to_str().unwrap()
+        )
+    } else {
+        String::new()
+    };
+    // freed later in this function
+    server.server_hdr = CString::new(server_hdr).unwrap().into_raw();
+
+    init_sockin(server);
+
     // open logfile
     if !server.logfile_name.is_null() {
         let mode = CString::new("ab").unwrap();
@@ -213,7 +227,7 @@ pub extern "C" fn main_rust(server: *mut Server) {
     }
 
     // free memory
-    unsafe { libc::free(server.server_hdr as *mut libc::c_void) };
+    unsafe { CString::from_raw(server.server_hdr) };
     free_server_fields(server);
 }
 
@@ -2112,10 +2126,7 @@ fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> 
 }
 
 /// Initialize the sockin global. This is the socket that we accept connections from.
-#[no_mangle]
-pub extern "C" fn init_sockin(server: *mut Server) {
-    let server = unsafe { server.as_mut().expect("server pointer is null") };
-
+fn init_sockin(server: &mut Server) {
     let domain = match server.inet6 {
         0 => socket::AddressFamily::Inet,
         _ => socket::AddressFamily::Inet6,

@@ -254,16 +254,6 @@ static struct server srv = {
 /* malloc that dies if it can't allocate. */
 extern void *xmalloc(const size_t size);
 
-/* strdup() that dies if it can't allocate.
- * Implement this ourselves since regular strdup() isn't C89.
- */
-static char *xstrdup(const char *src) {
-    size_t len = strlen(src) + 1;
-    char *dest = xmalloc(len);
-    memcpy(dest, src, len);
-    return dest;
-}
-
 #ifdef __sun /* unimpressed by Solaris */
 static int vasprintf(char **strp, const char *fmt, va_list ap) {
     char tmp;
@@ -273,29 +263,6 @@ static int vasprintf(char **strp, const char *fmt, va_list ap) {
     return result;
 }
 #endif
-
-/* vasprintf() that dies if it fails. */
-static unsigned int xvasprintf(char **ret, const char *format, va_list ap)
-    __printflike(2,0);
-static unsigned int xvasprintf(char **ret, const char *format, va_list ap) {
-    int len = vasprintf(ret, format, ap);
-    if (ret == NULL || len == -1)
-        errx(1, "out of memory in vasprintf()");
-    return (unsigned int)len;
-}
-
-/* asprintf() that dies if it fails. */
-static unsigned int xasprintf(char **ret, const char *format, ...)
-    __printflike(2,3);
-static unsigned int xasprintf(char **ret, const char *format, ...) {
-    va_list va;
-    unsigned int len;
-
-    va_start(va, format);
-    len = xvasprintf(ret, format, va);
-    va_end(va);
-    return len;
-}
 
 extern void init_forward_map(struct server *srv);
 
@@ -308,11 +275,6 @@ extern void parse_default_extension_map(struct server *srv);
  * Adds contents of specified file to mime_map list.
  */
 extern void parse_extension_map_file(struct server *srv, const char *filename);
-
-/* Initialize the sockin global.  This is the socket that we accept
- * connections from.
- */
-extern void init_sockin(struct server *srv);
 
 extern void parse_commandline(struct server *srv);
 
@@ -332,11 +294,6 @@ int main(int argc, char **argv) {
     parse_default_extension_map(&srv);
     parse_commandline(&srv);
     set_keep_alive_field(&srv);
-    if (srv.want_server_id)
-        xasprintf(&srv.server_hdr, "Server: %s\r\n", srv.pkgname);
-    else
-        srv.server_hdr = xstrdup("");
-    init_sockin(&srv);
 
     /* main loop */
     main_rust(&srv);
