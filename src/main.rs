@@ -253,7 +253,7 @@ pub struct Server {
     copyright: &'static str,
     connections: *mut libc::c_void,
     forward_map: ForwardMap,
-    forward_all_url: *const libc::c_char,
+    forward_all_url: Option<String>,
     timeout_secs: libc::c_int,
     bindaddr: *mut libc::c_char,
     bindport: u16,
@@ -292,7 +292,7 @@ impl Server {
             copyright: "copyright (c) 2003-2021 Emil Mikulic",
             connections: null_mut(),
             forward_map: ForwardMap::new(),
-            forward_all_url: null_mut(),
+            forward_all_url: None,
             timeout_secs: 30,
             bindaddr: null_mut(),
             bindport: 8080,      /* or 80 if running as root */
@@ -461,8 +461,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             }
             "--forward-all" => {
                 let url = args.next().ok_or("missing url after --forward-all")?;
-                let url = CString::new(url).unwrap().into_raw();
-                server.forward_all_url = url;
+                server.forward_all_url = Some(url.to_string());
             }
             "--no-server-id" => server.want_server_id = false,
             "--timeout" => {
@@ -1348,14 +1347,7 @@ fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&
             return Some(target);
         }
     }
-    if !server.forward_all_url.is_null() {
-        return Some(
-            unsafe { CStr::from_ptr(server.forward_all_url) }
-                .to_str()
-                .unwrap(),
-        );
-    }
-    None
+    server.forward_all_url.as_deref()
 }
 
 /// Return range based on header values and file length.
