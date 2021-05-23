@@ -118,7 +118,7 @@ fn main() {
     parse_commandline(&mut server);
     set_keep_alive_field(&mut server);
 
-    let server_hdr = if server.want_server_id == 1 {
+    let server_hdr = if server.want_server_id {
         format!("Server: {}\r\n", server.pkgname)
     } else {
         String::new()
@@ -146,7 +146,7 @@ fn main() {
     let mut lifeline_read = -1;
     let mut lifeline_write = -1;
     let mut fd_null = -1;
-    if server.want_daemon == 1 {
+    if server.want_daemon {
         daemonize_start(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
     }
 
@@ -161,7 +161,7 @@ fn main() {
         abort!("signal(SIGTERM): {}", e);
     }
 
-    if server.want_chroot == 1 {
+    if server.want_chroot {
         // Force reading the local timezone before chroot makes this impossible.
         Local::now();
 
@@ -203,7 +203,7 @@ fn main() {
         pidfile_create(&mut server);
     }
 
-    if server.want_daemon == 1 {
+    if server.want_daemon {
         daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
     }
 
@@ -260,27 +260,27 @@ pub struct Server {
     bindport: u16,
     max_connections: libc::c_int,
     index_name: *mut libc::c_char,
-    no_listing: libc::c_int,
+    no_listing: bool,
     sockin: libc::c_int,
     now: libc::time_t,
-    inet6: libc::c_int,
+    inet6: bool,
     wwwroot: *mut libc::c_char,
     logfile_name: *mut libc::c_char,
     logfile: *mut libc::FILE,
     pidfile_name: *mut libc::c_char,
     pidfile_fd: libc::c_int,
-    want_chroot: libc::c_int,
-    want_daemon: libc::c_int,
-    want_accf: libc::c_int,
-    want_keepalive: libc::c_int,
-    want_server_id: libc::c_int,
+    want_chroot: bool,
+    want_daemon: bool,
+    want_accf: bool,
+    want_keepalive: bool,
+    want_server_id: bool,
     server_hdr: *mut libc::c_char,
     auth_key: *mut libc::c_char,
     num_requests: u64,
     total_in: u64,
     total_out: u64,
     accepting: libc::c_int,
-    syslog_enabled: libc::c_int,
+    syslog_enabled: bool,
     keep_alive_field: *mut libc::c_void,
     mime_map: *mut libc::c_void,
     drop_uid: libc::uid_t,
@@ -299,27 +299,27 @@ impl Server {
             bindport: 8080,      /* or 80 if running as root */
             max_connections: -1, /* kern.ipc.somaxconn */
             index_name: null_mut(),
-            no_listing: 0,
+            no_listing: false,
             sockin: -1,
             now: 0,
-            inet6: 0,
+            inet6: false,
             wwwroot: null_mut(),
             logfile_name: null_mut(),
             logfile: null_mut(),
             pidfile_name: null_mut(),
             pidfile_fd: -1,
-            want_chroot: 0,
-            want_daemon: 0,
-            want_accf: 0,
-            want_keepalive: 1,
-            want_server_id: 1,
+            want_chroot: false,
+            want_daemon: false,
+            want_accf: false,
+            want_keepalive: true,
+            want_server_id: true,
             server_hdr: null_mut(),
             auth_key: null_mut(),
             num_requests: 0,
             total_in: 0,
             total_out: 0,
             accepting: 1,
-            syslog_enabled: 0,
+            syslog_enabled: false,
             keep_alive_field: null_mut(),
             mime_map: null_mut(),
             drop_uid: INVALID_UID,
@@ -401,8 +401,8 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
                 // freed by `free_server_fields`
                 server.logfile_name = CString::new(filename).unwrap().into_raw();
             }
-            "--chroot" => server.want_chroot = 1,
-            "--daemon" => server.want_daemon = 1,
+            "--chroot" => server.want_chroot = true,
+            "--daemon" => server.want_daemon = true,
             "--index" => {
                 // free and replace default value
                 assert!(!server.index_name.is_null());
@@ -411,7 +411,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
                 // freed by `free_server_fields`
                 server.index_name = CString::new(filename).unwrap().into_raw();
             }
-            "--no-listing" => server.no_listing = 1,
+            "--no-listing" => server.no_listing = true,
             "--mimetypes" => {
                 let filename = args.next().ok_or("missing filename after --mimetypes")?;
                 mime_map.parse_extension_map_file(&OsString::from(filename));
@@ -457,9 +457,9 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
                 // freed by `free_server_fields`
                 server.pidfile_name = CString::new(filename).unwrap().into_raw();
             }
-            "--no-keepalive" => server.want_keepalive = 0,
-            "--accf" => server.want_accf = 1, // TODO: remove?
-            "--syslog" => server.syslog_enabled = 1,
+            "--no-keepalive" => server.want_keepalive = false,
+            "--accf" => server.want_accf = true, // TODO: remove?
+            "--syslog" => server.syslog_enabled = true,
             "--forward" => {
                 let host = args.next().ok_or("missing host after --forward")?;
                 let url = args.next().ok_or("missing url after --forward")?;
@@ -470,7 +470,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
                 let url = CString::new(url).unwrap().into_raw();
                 server.forward_all_url = url;
             }
-            "--no-server-id" => server.want_server_id = 0,
+            "--no-server-id" => server.want_server_id = false,
             "--timeout" => {
                 server.timeout_secs =
                     parse_num(args.next().ok_or("missing number after --timeout")?)?;
@@ -484,7 +484,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
                 // freed by `free_server_fields`
                 server.auth_key = CString::new(auth_key).unwrap().into_raw();
             }
-            "--ipv6" => server.inet6 = 1,
+            "--ipv6" => server.inet6 = true,
             _ => {
                 return Err(format!("unknown argument `{}'", arg));
             }
@@ -910,7 +910,7 @@ struct GeneratedOn<'a>(&'a Server);
 impl<'a> std::fmt::Display for GeneratedOn<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let date = HttpDate(self.0.now);
-        if self.0.want_server_id == 1 {
+        if self.0.want_server_id {
             write!(f, "Generated by {} on {}\n", self.0.pkgname, date)?;
         }
         Ok(())
@@ -1459,7 +1459,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         // does an index exist?
         target = format!("{}{}{}", wwwroot, decoded_url, index_name);
         if !file_exists(&target) {
-            if server.no_listing > 0 {
+            if server.no_listing {
                 // Return 404 instead of 403 to make --no-listing indistinguishable from the
                 // directory not existing. i.e.: Don't leak information.
                 let reason = "The URL you requested was not found.";
@@ -1652,7 +1652,7 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
     }
 
     // cmdline flag can be used to deny keep-alive
-    if server.want_keepalive == 0 {
+    if !server.want_keepalive {
         conn.conn_close = true;
     }
 
@@ -1915,7 +1915,7 @@ fn log_connection(server: &Server, conn: &Connection) {
     ))
     .unwrap();
 
-    if server.syslog_enabled == 1 {
+    if server.syslog_enabled {
         unsafe {
             libc::syslog(libc::LOG_INFO, message.as_c_str().as_ptr());
         }
@@ -2195,7 +2195,7 @@ fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> 
     } else {
         Some(unsafe { CStr::from_ptr(server.bindaddr) }.to_str().unwrap())
     };
-    Ok(if server.inet6 == 1 {
+    Ok(if server.inet6 {
         SocketAddr::V6(SocketAddrV6::new(
             Ipv6Addr::from_str(bindaddr.unwrap_or("::"))?,
             server.bindport,
@@ -2213,8 +2213,8 @@ fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> 
 /// Initialize the sockin global. This is the socket that we accept connections from.
 fn init_sockin(server: &mut Server) {
     let domain = match server.inet6 {
-        0 => socket::AddressFamily::Inet,
-        _ => socket::AddressFamily::Inet6,
+        false => socket::AddressFamily::Inet,
+        true => socket::AddressFamily::Inet6,
     };
 
     server.sockin = match socket::socket(
