@@ -10,7 +10,6 @@ use std::net::{
 };
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
-use std::ptr::null_mut;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -118,7 +117,6 @@ fn main() {
         env!("CARGO_PKG_VERSION"),
         COPYRIGHT,
     );
-    init_connections_list(&mut server);
     if let Err(e) = parse_commandline(&mut server) {
         abort!("{}", e);
     }
@@ -191,9 +189,11 @@ fn main() {
         daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
     }
 
+    let mut connections = Vec::new();
+
     // main loop
     while is_running() {
-        httpd_poll(&mut server);
+        httpd_poll(&mut server, &mut connections);
     }
 
     // clean exit
@@ -203,8 +203,10 @@ fn main() {
 
     pidfile.map(|pidfile| pidfile.remove());
 
-    // free memory
-    free_server_fields(&mut server);
+    // free connections
+    for mut conn in connections.drain(..) {
+        free_connection(&mut server, &mut conn);
+    }
 
     // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
     // will be closed. It's not clear whether this was intentional.
@@ -253,7 +255,6 @@ impl LogSink {
 
 #[derive(Debug)]
 struct Server {
-    connections: *mut libc::c_void,
     forward_map: ForwardMap,
     forward_all_url: Option<String>,
     timeout_secs: libc::c_int,
@@ -286,7 +287,6 @@ struct Server {
 impl Server {
     fn new() -> Self {
         Self {
-            connections: null_mut(),
             forward_map: ForwardMap::new(),
             forward_all_url: None,
             timeout_secs: 30,
@@ -472,16 +472,6 @@ fn parse_commandline(server: &mut Server) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-/// Free server struct fields.
-fn free_server_fields(server: &mut Server) {
-    assert!(!server.connections.is_null());
-    let mut connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
-    for mut conn in connections.drain(..) {
-        free_connection(server, &mut conn); // logs connection and drops fields
-    }
-    server.connections = null_mut();
 }
 
 const PIDFILE_MODE: u32 = 0o600;
@@ -1857,28 +1847,6 @@ fn new_connection(server: &Server, stream: TcpStream, client: IpAddr) -> Connect
     }
 }
 
-/// Initialize connections list.
-fn init_connections_list(server: &mut Server) {
-    assert!(server.connections.is_null());
-    let connections: Vec<Connection> = Vec::new();
-    // freed by `free_server_fields`
-    server.connections = Box::into_raw(Box::new(connections)) as *mut libc::c_void;
-}
-
-/// Remove connection by index.
-fn remove_connection(server: &mut Server, index: libc::c_int) {
-    let connections = unsafe {
-        (server.connections as *mut Vec<Connection>)
-            .as_mut()
-            .expect("connections pointer is null")
-    };
-    assert!(
-        (index as usize) < connections.len(),
-        "invalid connection index"
-    );
-    connections.remove(index as usize);
-}
-
 /// If a connection has been idle for more than timeout_secs, it will be marked as DONE and killed
 /// off in httpd_poll().
 fn poll_check_timeout(server: &Server, conn: &mut Connection) {
@@ -1891,7 +1859,7 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection) {
 }
 
 /// Accept a connection from sockin and add it to the connection queue.
-fn accept_connection(server: &mut Server) {
+fn accept_connection(server: &mut Server, connections: &mut Vec<Connection>) {
     let fd = match socket::accept(server.sockin) {
         Ok(fd) => fd,
         Err(e) => {
@@ -1923,11 +1891,6 @@ fn accept_connection(server: &mut Server) {
     // Allocate and initialize struct connection.
     let conn = new_connection(server, stream, addr.ip().to_std());
 
-    let connections = unsafe {
-        (server.connections as *mut Vec<Connection>)
-            .as_mut()
-            .expect("connections pointer is null")
-    };
     connections.push(conn);
     let num_connections = connections.len();
 
@@ -1937,7 +1900,7 @@ fn accept_connection(server: &mut Server) {
 
 /// Main loop of the httpd - a select() and then delegation to accept connections, handle receiving
 /// of requests, and sending of replies.
-fn httpd_poll(server: &mut Server) {
+fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
     let mut recv_set = FdSet::new();
     let mut send_set = FdSet::new();
     let mut timeout_required = false;
@@ -1946,11 +1909,6 @@ fn httpd_poll(server: &mut Server) {
         recv_set.insert(server.sockin);
     }
 
-    let connections = unsafe {
-        (server.connections as *mut Vec<Connection>)
-            .as_mut()
-            .expect("connections pointer is null")
-    };
     for conn in connections.iter() {
         match conn.state {
             ConnectionState::Done => {}
@@ -1998,7 +1956,7 @@ fn httpd_poll(server: &mut Server) {
 
     // poll connections that select() says need attention
     if recv_set.contains(server.sockin) {
-        accept_connection(server);
+        accept_connection(server, connections);
     }
     let mut index = 0;
     while index < connections.len() {
@@ -2031,8 +1989,8 @@ fn httpd_poll(server: &mut Server) {
         if conn.state == ConnectionState::Done {
             // clean out finished connection
             if conn.conn_close {
-                free_connection(server, conn); // logs connection and drops fields
-                remove_connection(server, index as libc::c_int); // drops connection
+                free_connection(server, conn);
+                connections.remove(index);
             } else {
                 recycle_connection(server, conn);
                 // and go right back to recv_request without going through select() again.
