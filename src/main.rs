@@ -192,10 +192,7 @@ fn main() {
         println!("set uid to {}", uid);
     }
 
-    // TODO: refactor pidfile functions into struct
-    if let Some(pidfile_name) = server.pidfile_name.as_deref() {
-        server.pidfile_fd = pidfile_create(pidfile_name);
-    }
+    let pidfile = server.pidfile_name.take().map(PidFile::create);
 
     if server.want_daemon {
         daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
@@ -215,10 +212,8 @@ fn main() {
             abort!("failed to close log file");
         }
     }
-    if let Some(pidfile_name) = server.pidfile_name.as_deref() {
-        pidfile_remove(pidfile_name, server.pidfile_fd);
-        server.pidfile_fd = -1;
-    }
+
+    pidfile.map(|pidfile| pidfile.remove());
 
     // free memory
     free_server_fields(&mut server);
@@ -262,7 +257,6 @@ pub struct Server {
     logfile_name: Option<String>,
     logfile: *mut libc::FILE,
     pidfile_name: Option<String>,
-    pidfile_fd: RawFd,
     want_chroot: bool,
     want_daemon: bool,
     want_accf: bool,
@@ -300,7 +294,6 @@ impl Server {
             logfile_name: None,
             logfile: null_mut(),
             pidfile_name: None,
-            pidfile_fd: -1,
             want_chroot: false,
             want_daemon: false,
             want_accf: false,
@@ -492,58 +485,70 @@ fn free_server_fields(server: &mut Server) {
     server.connections = null_mut();
 }
 
-fn pidfile_read(pidfile_name: &str) -> Pid {
-    let mut pidfile = match File::open(pidfile_name) {
-        Ok(file) => file,
-        Err(e) => abort!("failed to open pidfile: {}", e),
-    };
-    let mut buf = String::new();
-    if let Err(e) = pidfile.read_to_string(&mut buf) {
-        abort!("read from pidfile failed: {}", e);
-    }
-    Pid::from_raw(match buf.parse() {
-        Ok(pid) => pid,
-        Err(e) => abort!("invalid pidfile contents: {}", e),
-    })
-}
-
-fn pidfile_remove(pidfile_name: &str, pidfile_fd: RawFd) {
-    if let Err(e) = remove_file(pidfile_name) {
-        abort!("unlink(pidfile) failed: {}", e);
-    }
-    if let Err(e) = close(pidfile_fd) {
-        abort!("close(pidfile) failed: {}", e);
-    }
-}
-
 const PIDFILE_MODE: u32 = 0o600;
 
-fn pidfile_create(pidfile_name: &str) -> RawFd {
-    // Create the pidfile, failing if it already exists.
-    // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
-    let mut pidfile = match OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_CREAT | libc::O_EXCL)
-        .mode(PIDFILE_MODE)
-        .open(pidfile_name)
-    {
-        Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            abort!(
-                "daemon already running with PID {}",
-                pidfile_read(pidfile_name)
-            );
+#[derive(Debug)]
+struct PidFile {
+    name: String,
+    fd: RawFd,
+}
+impl PidFile {
+    // TODO: Return Err instead of aborting
+    fn create(pidfile_name: String) -> Self {
+        // Create the pidfile, failing if it already exists.
+        // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
+        let mut pidfile = match OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_CREAT | libc::O_EXCL)
+            .mode(PIDFILE_MODE)
+            .open(&pidfile_name)
+        {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                abort!(
+                    "daemon already running with PID {}",
+                    Self::read(&pidfile_name)
+                );
+            }
+            Err(e) => abort!("can't create pidfile {}: {}", &pidfile_name, e),
+        };
+
+        // Write pid to the pidfile.
+        if let Err(e) = write!(pidfile, "{}", getpid()) {
+            Self::remove_raw(&pidfile_name, pidfile.into_raw_fd());
+            abort!("pidfile write failed: {}", e);
+        };
+
+        Self {
+            name: pidfile_name,
+            fd: pidfile.into_raw_fd(),
         }
-        Err(e) => abort!("can't create pidfile {}: {}", pidfile_name, e),
-    };
-
-    // Write pid to the pidfile.
-    if let Err(e) = write!(pidfile, "{}", getpid()) {
-        pidfile_remove(pidfile_name, pidfile.into_raw_fd());
-        abort!("pidfile write failed: {}", e);
-    };
-
-    pidfile.into_raw_fd()
+    }
+    fn read(pidfile: &str) -> Pid {
+        let mut pidfile = match File::open(pidfile) {
+            Ok(file) => file,
+            Err(e) => abort!("failed to open pidfile: {}", e),
+        };
+        let mut buf = String::new();
+        if let Err(e) = pidfile.read_to_string(&mut buf) {
+            abort!("read from pidfile failed: {}", e);
+        }
+        Pid::from_raw(match buf.parse() {
+            Ok(pid) => pid,
+            Err(e) => abort!("invalid pidfile contents: {}", e),
+        })
+    }
+    fn remove(self) {
+        Self::remove_raw(&self.name, self.fd);
+    }
+    fn remove_raw(pidfile_name: &str, pidfile_fd: RawFd) {
+        if let Err(e) = remove_file(pidfile_name) {
+            abort!("unlink(pidfile) failed: {}", e);
+        }
+        if let Err(e) = close(pidfile_fd) {
+            abort!("close(pidfile) failed: {}", e);
+        }
+    }
 }
 
 const PATH_DEVNULL: &str = "/dev/null";
