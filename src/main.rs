@@ -114,7 +114,6 @@ fn main() {
     println!("{}, {}.", server.pkgname, server.copyright,);
     init_connections_list(&mut server);
     parse_commandline(&mut server);
-    set_keep_alive_field(&mut server);
 
     if server.want_server_id {
         server.server_hdr = format!("Server: {}\r\n", server.pkgname);
@@ -274,7 +273,6 @@ pub struct Server {
     total_out: u64,
     accepting: bool,
     syslog_enabled: bool,
-    keep_alive_field: *mut libc::c_void,
     mime_map: MimeMap,
     drop_uid: libc::uid_t,
     drop_gid: libc::gid_t,
@@ -313,10 +311,17 @@ impl Server {
             total_out: 0,
             accepting: true,
             syslog_enabled: false,
-            keep_alive_field: null_mut(),
             mime_map: MimeMap::parse_default_extension_map(),
             drop_uid: INVALID_UID,
             drop_gid: INVALID_GID,
+        }
+    }
+    fn keep_alive_header(&self, conn_close: bool) -> String {
+        // TODO: Build this string once and reuse it.
+        if conn_close {
+            "Connection: close\r\n".to_string()
+        } else {
+            format!("Keep-Alive: timeout={}\r\n", self.timeout_secs)
         }
     }
 }
@@ -494,10 +499,6 @@ fn free_server_fields(server: &mut Server) {
         free_connection(server, &mut conn); // logs connection and drops fields
     }
     server.connections = null_mut();
-
-    // free_keep_alive_field(&srv);
-    assert!(!server.keep_alive_field.is_null());
-    unsafe { Box::from_raw(server.keep_alive_field as *mut String) };
 }
 
 fn pidfile_read(server: &Server) -> Pid {
@@ -805,27 +806,6 @@ impl MimeMap {
     }
 }
 
-/// Set the keep alive field.
-fn set_keep_alive_field(server: &mut Server) {
-    assert!(server.keep_alive_field.is_null());
-    let keep_alive = format!("Keep-Alive: timeout={}\r\n", server.timeout_secs);
-    // freed by `free_server_fields`
-    server.keep_alive_field = Box::into_raw(Box::new(keep_alive)) as *mut libc::c_void;
-}
-
-/// Returns Connection or Keep-Alive header, depending on conn_close.
-fn keep_alive(server: &Server, conn: &Connection) -> String {
-    // TODO: We've made the keep alive field caching pretty useless by cloning the string each
-    // time. Return a reference once this can be a method?
-    if conn.conn_close {
-        "Connection: close\r\n".to_string()
-    } else {
-        unsafe { (server.keep_alive_field as *const String).as_ref() }
-            .expect("keep_alive_field is null")
-            .clone()
-    }
-}
-
 /// RFC1123 formatted date.
 struct HttpDate(libc::time_t);
 
@@ -1119,7 +1099,7 @@ fn default_reply(
         errname,
         HttpDate(server.now),
         server.server_hdr,
-        keep_alive(server, conn),
+        server.keep_alive_header(conn.conn_close),
         conn.reply_length,
         if server.auth_key.is_some() {
             "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
@@ -1161,7 +1141,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         HttpDate(server.now),
         server.server_hdr,
         location,
-        keep_alive(server, conn),
+        server.keep_alive_header(conn.conn_close),
         conn.reply_length,
     );
     conn.header = Some(headers);
@@ -1253,7 +1233,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         \r\n",
         HttpDate(server.now),
         server.server_hdr,
-        keep_alive(server, conn),
+        server.keep_alive_header(conn.conn_close),
         conn.reply_length,
     );
     conn.header = Some(headers);
@@ -1280,7 +1260,7 @@ fn not_modified(server: &Server, conn: &mut Connection) {
         \r\n",
         HttpDate(server.now),
         server.server_hdr,
-        keep_alive(server, conn),
+        server.keep_alive_header(conn.conn_close),
     );
     conn.header = Some(headers);
     conn.http_code = 304;
@@ -1487,7 +1467,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
             \r\n",
             HttpDate(server.now),
             server.server_hdr,
-            keep_alive(server, conn),
+            server.keep_alive_header(conn.conn_close),
             conn.reply_length,
             from,
             to,
@@ -1514,7 +1494,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         \r\n",
         HttpDate(server.now),
         server.server_hdr,
-        keep_alive(server, conn),
+        server.keep_alive_header(conn.conn_close),
         conn.reply_length,
         mimetype,
         HttpDate(lastmod.try_into().unwrap())
