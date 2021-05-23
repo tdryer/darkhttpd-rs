@@ -113,7 +113,6 @@ fn main() {
 
     println!("{}, {}.", server.pkgname, server.copyright,);
     init_connections_list(&mut server);
-    parse_default_extension_map(&mut server);
     parse_commandline(&mut server);
     set_keep_alive_field(&mut server);
 
@@ -276,7 +275,7 @@ pub struct Server {
     accepting: bool,
     syslog_enabled: bool,
     keep_alive_field: *mut libc::c_void,
-    mime_map: *mut libc::c_void,
+    mime_map: MimeMap,
     drop_uid: libc::uid_t,
     drop_gid: libc::gid_t,
 }
@@ -315,7 +314,7 @@ impl Server {
             accepting: true,
             syslog_enabled: false,
             keep_alive_field: null_mut(),
-            mime_map: null_mut(),
+            mime_map: MimeMap::parse_default_extension_map(),
             drop_uid: INVALID_UID,
             drop_gid: INVALID_GID,
         }
@@ -364,8 +363,6 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     // TODO: free this
     server.wwwroot = CString::new(wwwroot).unwrap().into_raw();
 
-    let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
-
     let args = &mut argv[2..].iter().map(|s| s.as_str());
     while let Some(arg) = args.next() {
         match arg {
@@ -396,10 +393,12 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--no-listing" => server.no_listing = true,
             "--mimetypes" => {
                 let filename = args.next().ok_or("missing filename after --mimetypes")?;
-                mime_map.parse_extension_map_file(&OsString::from(filename));
+                server
+                    .mime_map
+                    .parse_extension_map_file(&OsString::from(filename));
             }
             "--default-mimetype" => {
-                mime_map.default_mimetype = args
+                server.mime_map.default_mimetype = args
                     .next()
                     .ok_or("missing string after --default-mimetype")?
                     .to_string();
@@ -495,10 +494,6 @@ fn free_server_fields(server: &mut Server) {
         free_connection(server, &mut conn); // logs connection and drops fields
     }
     server.connections = null_mut();
-
-    // free_mime_map(&srv);
-    assert!(!server.mime_map.is_null());
-    unsafe { Box::from_raw(server.mime_map as *mut MimeMap) };
 
     // free_keep_alive_field(&srv);
     assert!(!server.keep_alive_field.is_null());
@@ -751,6 +746,7 @@ const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
     "video/mp4               mp4",
 ];
 
+#[derive(Debug)]
 struct MimeMap {
     mimetypes: HashMap<String, String>,
     default_mimetype: String,
@@ -807,13 +803,6 @@ impl MimeMap {
             .and_then(|extension| self.mimetypes.get(extension))
             .unwrap_or(&self.default_mimetype)
     }
-}
-
-fn parse_default_extension_map(server: &mut Server) {
-    let mime_map = MimeMap::parse_default_extension_map();
-    assert!(server.mime_map.is_null());
-    // freed by `free_server_fields`
-    server.mime_map = Box::into_raw(Box::new(mime_map)) as *mut libc::c_void;
 }
 
 /// Set the keep alive field.
@@ -1374,9 +1363,6 @@ fn process_get(server: &Server, conn: &mut Connection) {
         return;
     }
 
-    let mime_map =
-        unsafe { (server.mime_map as *const MimeMap).as_ref() }.expect("mime_map is null");
-
     let target; // path to the file we're going to return
     let mimetype; // the mimetype for that file
 
@@ -1397,11 +1383,11 @@ fn process_get(server: &Server, conn: &mut Connection) {
             generate_dir_listing(server, conn, &target, &decoded_url);
             return;
         } else {
-            mimetype = mime_map.url_content_type(&server.index_name);
+            mimetype = server.mime_map.url_content_type(&server.index_name);
         }
     } else {
         target = format!("{}{}", wwwroot, decoded_url);
-        mimetype = mime_map.url_content_type(&decoded_url);
+        mimetype = server.mime_map.url_content_type(&decoded_url);
     }
 
     let file = match std::fs::OpenOptions::new()
