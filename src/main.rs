@@ -9,7 +9,7 @@ use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
 };
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::ptr::null_mut;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -192,8 +192,9 @@ fn main() {
         println!("set uid to {}", uid);
     }
 
-    if !server.pidfile_name.is_null() {
-        pidfile_create(&mut server);
+    // TODO: refactor pidfile functions into struct
+    if let Some(pidfile_name) = server.pidfile_name.as_deref() {
+        server.pidfile_fd = pidfile_create(pidfile_name);
     }
 
     if server.want_daemon {
@@ -214,8 +215,9 @@ fn main() {
             abort!("failed to close log file");
         }
     }
-    if !server.pidfile_name.is_null() {
-        pidfile_remove(&mut server);
+    if let Some(pidfile_name) = server.pidfile_name.as_deref() {
+        pidfile_remove(pidfile_name, server.pidfile_fd);
+        server.pidfile_fd = -1;
     }
 
     // free memory
@@ -259,8 +261,8 @@ pub struct Server {
     wwwroot: *mut libc::c_char,
     logfile_name: Option<String>,
     logfile: *mut libc::FILE,
-    pidfile_name: *mut libc::c_char,
-    pidfile_fd: libc::c_int,
+    pidfile_name: Option<String>,
+    pidfile_fd: RawFd,
     want_chroot: bool,
     want_daemon: bool,
     want_accf: bool,
@@ -297,7 +299,7 @@ impl Server {
             wwwroot: null_mut(),
             logfile_name: None,
             logfile: null_mut(),
-            pidfile_name: null_mut(),
+            pidfile_name: None,
             pidfile_fd: -1,
             want_chroot: false,
             want_daemon: false,
@@ -441,7 +443,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--pidfile" => {
                 let filename = args.next().ok_or("missing filename after --pidfile")?;
                 // freed by `free_server_fields`
-                server.pidfile_name = CString::new(filename).unwrap().into_raw();
+                server.pidfile_name = Some(filename.to_string());
             }
             "--no-keepalive" => server.want_keepalive = false,
             "--accf" => server.want_accf = true, // TODO: remove?
@@ -482,12 +484,6 @@ fn free_server_fields(server: &mut Server) {
     unsafe { CString::from_raw(server.wwwroot) };
     server.wwwroot = null_mut();
 
-    if !server.pidfile_name.is_null() {
-        unsafe { CString::from_raw(server.pidfile_name) };
-        server.pidfile_name = null_mut();
-    }
-
-    // free_connections_list(&srv);
     assert!(!server.connections.is_null());
     let mut connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
     for mut conn in connections.drain(..) {
@@ -496,12 +492,7 @@ fn free_server_fields(server: &mut Server) {
     server.connections = null_mut();
 }
 
-fn pidfile_read(server: &Server) -> Pid {
-    assert!(!server.pidfile_name.is_null());
-    let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
-        .to_str()
-        .unwrap();
-
+fn pidfile_read(pidfile_name: &str) -> Pid {
     let mut pidfile = match File::open(pidfile_name) {
         Ok(file) => file,
         Err(e) => abort!("failed to open pidfile: {}", e),
@@ -516,31 +507,18 @@ fn pidfile_read(server: &Server) -> Pid {
     })
 }
 
-fn pidfile_remove(server: &mut Server) {
-    assert!(!server.pidfile_name.is_null());
-    let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
-        .to_str()
-        .unwrap();
-    assert!(server.pidfile_fd >= 0);
-
+fn pidfile_remove(pidfile_name: &str, pidfile_fd: RawFd) {
     if let Err(e) = remove_file(pidfile_name) {
         abort!("unlink(pidfile) failed: {}", e);
     }
-    if let Err(e) = close(server.pidfile_fd) {
+    if let Err(e) = close(pidfile_fd) {
         abort!("close(pidfile) failed: {}", e);
     }
-    server.pidfile_fd = -1;
 }
 
 const PIDFILE_MODE: u32 = 0o600;
 
-fn pidfile_create(server: &mut Server) {
-    assert!(!server.pidfile_name.is_null());
-    let pidfile_name = unsafe { CStr::from_ptr(server.pidfile_name) }
-        .to_str()
-        .unwrap();
-    assert!(server.pidfile_fd == -1);
-
+fn pidfile_create(pidfile_name: &str) -> RawFd {
     // Create the pidfile, failing if it already exists.
     // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
     let mut pidfile = match OpenOptions::new()
@@ -551,18 +529,21 @@ fn pidfile_create(server: &mut Server) {
     {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            abort!("daemon already running with PID {}", pidfile_read(server));
+            abort!(
+                "daemon already running with PID {}",
+                pidfile_read(pidfile_name)
+            );
         }
         Err(e) => abort!("can't create pidfile {}: {}", pidfile_name, e),
     };
 
     // Write pid to the pidfile.
     if let Err(e) = write!(pidfile, "{}", getpid()) {
-        pidfile_remove(server);
+        pidfile_remove(pidfile_name, pidfile.into_raw_fd());
         abort!("pidfile write failed: {}", e);
     };
 
-    server.pidfile_fd = pidfile.into_raw_fd();
+    pidfile.into_raw_fd()
 }
 
 const PATH_DEVNULL: &str = "/dev/null";
