@@ -113,7 +113,6 @@ fn main() {
 
     println!("{}, {}.", server.pkgname, server.copyright,);
     init_connections_list(&mut server);
-    init_forward_map(&mut server);
     parse_default_extension_map(&mut server);
     parse_commandline(&mut server);
     set_keep_alive_field(&mut server);
@@ -253,7 +252,7 @@ pub struct Server {
     pkgname: &'static str,
     copyright: &'static str,
     connections: *mut libc::c_void,
-    forward_map: *mut libc::c_void,
+    forward_map: ForwardMap,
     forward_all_url: *const libc::c_char,
     timeout_secs: libc::c_int,
     bindaddr: *mut libc::c_char,
@@ -292,7 +291,7 @@ impl Server {
             pkgname: "darkhttpd/1.13.from.git",
             copyright: "copyright (c) 2003-2021 Emil Mikulic",
             connections: null_mut(),
-            forward_map: null_mut(),
+            forward_map: ForwardMap::new(),
             forward_all_url: null_mut(),
             timeout_secs: 30,
             bindaddr: null_mut(),
@@ -373,11 +372,6 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     // set default index name
     server.index_name = CString::new(DEFAULT_INDEX_NAME).unwrap().into_raw();
 
-    let forward_map = unsafe {
-        (server.forward_map as *mut ForwardMap)
-            .as_mut()
-            .expect("forward_map pointer is null")
-    };
     let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
 
     let args = &mut argv[2..].iter().map(|s| s.as_str());
@@ -463,7 +457,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--forward" => {
                 let host = args.next().ok_or("missing host after --forward")?;
                 let url = args.next().ok_or("missing url after --forward")?;
-                forward_map.insert(host.to_string(), url.to_string());
+                server.forward_map.insert(host.to_string(), url.to_string());
             }
             "--forward-all" => {
                 let url = args.next().ok_or("missing url after --forward-all")?;
@@ -523,11 +517,6 @@ fn free_server_fields(server: &mut Server) {
         unsafe { CString::from_raw(server.bindaddr) };
         server.bindaddr = null_mut();
     }
-
-    // free_forward_map(&srv);
-    assert!(!server.forward_map.is_null());
-    unsafe { Box::from_raw(server.forward_map as *mut ForwardMap) };
-    server.forward_map = null_mut();
 
     // free_connections_list(&srv);
     assert!(!server.connections.is_null());
@@ -767,12 +756,6 @@ enum ConnectionReplyType {
 }
 
 type ForwardMap = HashMap<String, String>;
-
-fn init_forward_map(server: &mut Server) {
-    assert!(server.forward_map.is_null());
-    // freed by `free_server_fields`
-    server.forward_map = Box::into_raw(Box::new(ForwardMap::new())) as *mut libc::c_void;
-}
 
 // TODO: Include this as a file.
 const DEFAULT_EXTENSIONS_MAP: &'static [&'static str] = &[
@@ -1359,14 +1342,9 @@ fn not_modified(server: &Server, conn: &mut Connection) {
 
 /// Get URL to forward to based on host header, if any.
 fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&'a str> {
-    let forward_map = unsafe {
-        (server.forward_map as *mut ForwardMap)
-            .as_mut()
-            .expect("forward_map pointer is null")
-    };
-    if !forward_map.is_empty() {
+    if !server.forward_map.is_empty() {
         let host = parse_field(conn, "Host: ");
-        if let Some(target) = host.and_then(move |host| forward_map.get(&host)) {
+        if let Some(target) = host.and_then(move |host| server.forward_map.get(&host)) {
             return Some(target);
         }
     }
