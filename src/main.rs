@@ -258,7 +258,7 @@ pub struct Server {
     bindaddr: *mut libc::c_char,
     bindport: u16,
     max_connections: libc::c_int,
-    index_name: *mut libc::c_char,
+    index_name: String,
     no_listing: bool,
     sockin: libc::c_int,
     now: libc::time_t,
@@ -297,7 +297,7 @@ impl Server {
             bindaddr: null_mut(),
             bindport: 8080,      /* or 80 if running as root */
             max_connections: -1, /* kern.ipc.somaxconn */
-            index_name: null_mut(),
+            index_name: DEFAULT_INDEX_NAME.to_string(),
             no_listing: false,
             sockin: -1,
             now: 0,
@@ -369,9 +369,6 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     // TODO: free this
     server.wwwroot = CString::new(wwwroot).unwrap().into_raw();
 
-    // set default index name
-    server.index_name = CString::new(DEFAULT_INDEX_NAME).unwrap().into_raw();
-
     let mime_map = unsafe { (server.mime_map as *mut MimeMap).as_mut() }.unwrap();
 
     let args = &mut argv[2..].iter().map(|s| s.as_str());
@@ -398,12 +395,8 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--chroot" => server.want_chroot = true,
             "--daemon" => server.want_daemon = true,
             "--index" => {
-                // free and replace default value
-                assert!(!server.index_name.is_null());
-                unsafe { CString::from_raw(server.index_name) };
                 let filename = args.next().ok_or("missing filename after --index")?;
-                // freed by `free_server_fields`
-                server.index_name = CString::new(filename).unwrap().into_raw();
+                server.index_name = filename.to_string();
             }
             "--no-listing" => server.no_listing = true,
             "--mimetypes" => {
@@ -502,10 +495,6 @@ fn free_server_fields(server: &mut Server) {
         unsafe { CString::from_raw(server.pidfile_name) };
         server.pidfile_name = null_mut();
     }
-
-    assert!(!server.index_name.is_null());
-    unsafe { CString::from_raw(server.index_name) };
-    server.index_name = null_mut();
 
     if !server.logfile_name.is_null() {
         unsafe { CString::from_raw(server.logfile_name) };
@@ -1389,9 +1378,6 @@ fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
 /// Process a GET/HEAD request.
 fn process_get(server: &Server, conn: &mut Connection) {
     let wwwroot = unsafe { CStr::from_ptr(server.wwwroot) }.to_str().unwrap();
-    let index_name = unsafe { CStr::from_ptr(server.index_name) }
-        .to_str()
-        .unwrap();
     let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
 
     // strip query params
@@ -1427,7 +1413,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
     // does it end in a slash? serve up url/index_name
     if decoded_url.ends_with('/') {
         // does an index exist?
-        target = format!("{}{}{}", wwwroot, decoded_url, index_name);
+        target = format!("{}{}{}", wwwroot, decoded_url, server.index_name);
         if !file_exists(&target) {
             if server.no_listing {
                 // Return 404 instead of 403 to make --no-listing indistinguishable from the
@@ -1441,8 +1427,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
             generate_dir_listing(server, conn, &target, &decoded_url);
             return;
         } else {
-            let index_name = unsafe { CStr::from_ptr(server.index_name).to_str().unwrap() };
-            mimetype = mime_map.url_content_type(index_name);
+            mimetype = mime_map.url_content_type(&server.index_name);
         }
     } else {
         target = format!("{}{}", wwwroot, decoded_url);
