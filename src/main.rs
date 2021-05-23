@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{remove_file, File, OpenOptions};
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, BufWriter, Read, Write};
 use std::mem::MaybeUninit;
 use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
@@ -133,21 +133,6 @@ fn main() {
 
     init_sockin(&mut server);
 
-    // open logfile
-    if let Some(logfile_name) = server.logfile_name.as_deref() {
-        let mode = CString::new("ab").unwrap();
-        server.logfile = unsafe {
-            libc::fopen(
-                CString::new(logfile_name).unwrap().as_c_str().as_ptr(),
-                mode.as_c_str().as_ptr(),
-            ) as *mut libc::FILE
-        };
-        if server.logfile.is_null() {
-            // TODO: add errno / error description
-            abort!("opening logfile: fopen(\"{}\")", logfile_name);
-        }
-    }
-
     let mut lifeline_read = -1;
     let mut lifeline_write = -1;
     let mut fd_null = -1;
@@ -215,11 +200,6 @@ fn main() {
     if let Err(e) = close(server.sockin) {
         abort!("failed to close listening socket: {}", e);
     };
-    if !server.logfile.is_null() {
-        if unsafe { libc::fclose(server.logfile as *mut libc::FILE) } == libc::EOF {
-            abort!("failed to close log file");
-        }
-    }
 
     pidfile.map(|pidfile| pidfile.remove());
 
@@ -228,7 +208,7 @@ fn main() {
 
     // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
     // will be closed. It's not clear whether this was intentional.
-    if !server.logfile.is_null() {
+    if !matches!(server.log_sink, LogSink::Stdout) {
         let rusage = match getrusage() {
             Ok(rusage) => rusage,
             Err(e) => abort!("getrusage failed: {}", e),
@@ -242,6 +222,32 @@ fn main() {
         );
         println!("Requests: {}", server.num_requests);
         println!("Bytes: {} in, {} out", server.total_in, server.total_out);
+    }
+}
+
+/// Where to put the access log.
+#[derive(Debug)]
+enum LogSink {
+    Stdout,
+    Syslog,
+    File(BufWriter<File>),
+}
+impl LogSink {
+    fn log(&mut self, message: &str) -> std::io::Result<()> {
+        match self {
+            Self::Stdout => {
+                print!("{}", message);
+            }
+            Self::Syslog => {
+                let message = CString::new(message).unwrap();
+                unsafe { libc::syslog(libc::LOG_INFO, message.as_c_str().as_ptr()) };
+            }
+            Self::File(file) => {
+                write!(file, "{}", message)?;
+                file.flush()?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -260,8 +266,7 @@ struct Server {
     now: libc::time_t,
     inet6: bool,
     wwwroot: String,
-    logfile_name: Option<String>,
-    logfile: *mut libc::FILE,
+    log_sink: LogSink,
     pidfile_name: Option<String>,
     want_chroot: bool,
     want_daemon: bool,
@@ -274,7 +279,6 @@ struct Server {
     total_in: u64,
     total_out: u64,
     accepting: bool,
-    syslog_enabled: bool,
     mime_map: MimeMap,
     drop_uid: libc::uid_t,
     drop_gid: libc::gid_t,
@@ -295,8 +299,7 @@ impl Server {
             now: 0,
             inet6: false,
             wwwroot: String::new(),
-            logfile_name: None,
-            logfile: null_mut(),
+            log_sink: LogSink::Stdout,
             pidfile_name: None,
             want_chroot: false,
             want_daemon: false,
@@ -309,7 +312,6 @@ impl Server {
             total_in: 0,
             total_out: 0,
             accepting: true,
-            syslog_enabled: false,
             mime_map: MimeMap::parse_default_extension_map(),
             drop_uid: INVALID_UID,
             drop_gid: INVALID_GID,
@@ -370,7 +372,6 @@ fn parse_commandline(server: &mut Server) -> Result<(), String> {
             }
             "--addr" => {
                 let addr = args.next().ok_or("missing ip after --addr")?;
-                // freed by `free_server_fields`
                 server.bindaddr = Some(addr.to_string());
             }
             "--maxconn" => {
@@ -379,8 +380,13 @@ fn parse_commandline(server: &mut Server) -> Result<(), String> {
             }
             "--log" => {
                 let filename = args.next().ok_or("missing filename after --log")?;
-                // freed by `free_server_fields`
-                server.logfile_name = Some(filename.to_string());
+                server.log_sink = LogSink::File(BufWriter::new(
+                    OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .open(filename)
+                        .map_err(|e| format!("failed to open log file: {}", e))?,
+                ))
             }
             "--chroot" => server.want_chroot = true,
             "--daemon" => server.want_daemon = true,
@@ -433,12 +439,11 @@ fn parse_commandline(server: &mut Server) -> Result<(), String> {
             }
             "--pidfile" => {
                 let filename = args.next().ok_or("missing filename after --pidfile")?;
-                // freed by `free_server_fields`
                 server.pidfile_name = Some(filename.to_string());
             }
             "--no-keepalive" => server.want_keepalive = false,
             "--accf" => server.want_accf = true, // TODO: remove?
-            "--syslog" => server.syslog_enabled = true,
+            "--syslog" => server.log_sink = LogSink::Syslog,
             "--forward" => {
                 let host = args.next().ok_or("missing host after --forward")?;
                 let url = args.next().ok_or("missing url after --forward")?;
@@ -1757,7 +1762,7 @@ impl<'a> std::fmt::Display for LogEncoded<'a> {
 }
 
 /// Add a connection's details to the logfile.
-fn log_connection(server: &Server, conn: &Connection) {
+fn log_connection(server: &mut Server, conn: &Connection) {
     if conn.http_code == 0 {
         return; // invalid - died in request
     }
@@ -1766,8 +1771,7 @@ fn log_connection(server: &Server, conn: &Connection) {
         // invalid - didn't parse - maybe too long
         None => return,
     };
-
-    let message = CString::new(format!(
+    let message = format!(
         "{} - - {} \"{} {} HTTP/1.1\" {} {} \"{}\" \"{}\"\n",
         conn.client,
         ClfDate(server.now),
@@ -1777,24 +1781,11 @@ fn log_connection(server: &Server, conn: &Connection) {
         conn.total_sent,
         LogEncoded(conn.referer.as_deref().unwrap_or("")),
         LogEncoded(conn.user_agent.as_deref().unwrap_or(""))
-    ))
-    .unwrap();
-
-    if server.syslog_enabled {
-        unsafe {
-            libc::syslog(libc::LOG_INFO, message.as_c_str().as_ptr());
-        }
-    } else if server.logfile.is_null() {
-        print!("{}", message.into_string().unwrap());
-    } else {
-        unsafe {
-            libc::fprintf(
-                server.logfile as *mut libc::FILE,
-                message.as_c_str().as_ptr(),
-            );
-            libc::fflush(server.logfile as *mut libc::FILE);
-        }
-    }
+    );
+    server
+        .log_sink
+        .log(&message)
+        .expect("failed to write log message");
 }
 
 /// Log a connection, then cleanly deallocate its internals.
