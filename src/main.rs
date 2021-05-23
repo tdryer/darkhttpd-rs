@@ -248,7 +248,7 @@ pub struct Server {
     forward_map: ForwardMap,
     forward_all_url: Option<String>,
     timeout_secs: libc::c_int,
-    bindaddr: *mut libc::c_char,
+    bindaddr: Option<String>,
     bindport: u16,
     max_connections: libc::c_int,
     index_name: String,
@@ -286,7 +286,7 @@ impl Server {
             forward_map: ForwardMap::new(),
             forward_all_url: None,
             timeout_secs: 30,
-            bindaddr: null_mut(),
+            bindaddr: None,
             bindport: 8080,      /* or 80 if running as root */
             max_connections: -1, /* kern.ipc.somaxconn */
             index_name: DEFAULT_INDEX_NAME.to_string(),
@@ -378,7 +378,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--addr" => {
                 let addr = args.next().ok_or("missing ip after --addr")?;
                 // freed by `free_server_fields`
-                server.bindaddr = CString::new(addr).unwrap().into_raw();
+                server.bindaddr = Some(addr.to_string());
             }
             "--maxconn" => {
                 server.max_connections =
@@ -485,11 +485,6 @@ fn free_server_fields(server: &mut Server) {
     if !server.pidfile_name.is_null() {
         unsafe { CString::from_raw(server.pidfile_name) };
         server.pidfile_name = null_mut();
-    }
-
-    if !server.bindaddr.is_null() {
-        unsafe { CString::from_raw(server.bindaddr) };
-        server.bindaddr = null_mut();
     }
 
     // free_connections_list(&srv);
@@ -2076,21 +2071,16 @@ fn httpd_poll(server: &mut Server) {
 }
 
 fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> {
-    let bindaddr = if server.bindaddr.is_null() {
-        None
-    } else {
-        Some(unsafe { CStr::from_ptr(server.bindaddr) }.to_str().unwrap())
-    };
     Ok(if server.inet6 {
         SocketAddr::V6(SocketAddrV6::new(
-            Ipv6Addr::from_str(bindaddr.unwrap_or("::"))?,
+            Ipv6Addr::from_str(server.bindaddr.as_deref().unwrap_or("::"))?,
             server.bindport,
             0,
             0,
         ))
     } else {
         SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::from_str(bindaddr.unwrap_or("0.0.0.0"))?,
+            Ipv4Addr::from_str(server.bindaddr.as_deref().unwrap_or("0.0.0.0"))?,
             server.bindport,
         ))
     })
