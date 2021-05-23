@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
-use std::ffi::{CStr, CString, OsStr, OsString};
+use std::ffi::{CString, OsStr, OsString};
 use std::fs::{remove_file, File, OpenOptions};
 use std::io::{BufRead, Read, Write};
 use std::mem::MaybeUninit;
@@ -158,19 +158,15 @@ fn main() {
         // Force reading the local timezone before chroot makes this impossible.
         Local::now();
 
-        let wwwroot = unsafe { CStr::from_ptr(server.wwwroot) }.to_str().unwrap();
-        if let Err(e) = chdir(wwwroot) {
-            abort!("chdir({}): {}", wwwroot, e);
+        if let Err(e) = chdir(server.wwwroot.as_str()) {
+            abort!("chdir({}): {}", &server.wwwroot, e);
         }
-        if let Err(e) = chroot(wwwroot) {
-            abort!("chroot({}): {}", wwwroot, e);
+        if let Err(e) = chroot(server.wwwroot.as_str()) {
+            abort!("chroot({}): {}", server.wwwroot, e);
         }
-        println!("chrooted to `{}'", wwwroot);
+        println!("chrooted to `{}'", &server.wwwroot);
 
-        // replace wwwroot with empty string
-        drop(wwwroot);
-        unsafe { CString::from_raw(server.wwwroot) };
-        server.wwwroot = CString::new("").unwrap().into_raw();
+        server.wwwroot.clear();
     }
 
     if server.drop_gid != INVALID_GID {
@@ -253,7 +249,7 @@ pub struct Server {
     sockin: libc::c_int,
     now: libc::time_t,
     inet6: bool,
-    wwwroot: *mut libc::c_char,
+    wwwroot: String,
     logfile_name: Option<String>,
     logfile: *mut libc::FILE,
     pidfile_name: Option<String>,
@@ -290,7 +286,7 @@ impl Server {
             sockin: -1,
             now: 0,
             inet6: false,
-            wwwroot: null_mut(),
+            wwwroot: String::new(),
             logfile_name: None,
             logfile: null_mut(),
             pidfile_name: None,
@@ -346,7 +342,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     let argv: Vec<String> = std::env::args().collect();
 
     if (argv.len() < 2) || (argv.len() == 2 && argv[1] == "--help") {
-        usage(server, &argv[0]); /* no wwwroot given */
+        usage(server, &argv[0]); // no wwwroot given
         std::process::exit(0);
     }
 
@@ -360,8 +356,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
     if wwwroot.ends_with('/') {
         wwwroot = &wwwroot[0..wwwroot.len() - 1];
     }
-    // TODO: free this
-    server.wwwroot = CString::new(wwwroot).unwrap().into_raw();
+    server.wwwroot = wwwroot.to_string();
 
     let args = &mut argv[2..].iter().map(|s| s.as_str());
     while let Some(arg) = args.next() {
@@ -473,10 +468,6 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
 
 /// Free server struct fields.
 fn free_server_fields(server: &mut Server) {
-    assert!(!server.wwwroot.is_null());
-    unsafe { CString::from_raw(server.wwwroot) };
-    server.wwwroot = null_mut();
-
     assert!(!server.connections.is_null());
     let mut connections = unsafe { Box::from_raw(server.connections as *mut Vec<Connection>) };
     for mut conn in connections.drain(..) {
@@ -1298,8 +1289,6 @@ fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
 
 /// Process a GET/HEAD request.
 fn process_get(server: &Server, conn: &mut Connection) {
-    let wwwroot = unsafe { CStr::from_ptr(server.wwwroot) }.to_str().unwrap();
-
     // strip query params
     let url = conn.url.as_ref().unwrap();
     let stripped_url = url.splitn(2, '?').next().unwrap().to_string();
@@ -1330,7 +1319,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
     // does it end in a slash? serve up url/index_name
     if decoded_url.ends_with('/') {
         // does an index exist?
-        target = format!("{}{}{}", wwwroot, decoded_url, server.index_name);
+        target = format!("{}{}{}", server.wwwroot, decoded_url, server.index_name);
         if !file_exists(&target) {
             if server.no_listing {
                 // Return 404 instead of 403 to make --no-listing indistinguishable from the
@@ -1340,14 +1329,14 @@ fn process_get(server: &Server, conn: &mut Connection) {
                 return;
             }
             // return directory listing
-            let target = format!("{}{}", wwwroot, decoded_url);
+            let target = format!("{}{}", server.wwwroot, decoded_url);
             generate_dir_listing(server, conn, &target, &decoded_url);
             return;
         } else {
             mimetype = server.mime_map.url_content_type(&server.index_name);
         }
     } else {
-        target = format!("{}{}", wwwroot, decoded_url);
+        target = format!("{}{}", server.wwwroot, decoded_url);
         mimetype = server.mime_map.url_content_type(&decoded_url);
     }
 
