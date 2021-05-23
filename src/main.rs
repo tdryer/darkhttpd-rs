@@ -269,11 +269,11 @@ pub struct Server {
     want_keepalive: bool,
     want_server_id: bool,
     server_hdr: String,
-    auth_key: *mut libc::c_char,
+    auth_key: Option<String>,
     num_requests: u64,
     total_in: u64,
     total_out: u64,
-    accepting: libc::c_int,
+    accepting: bool,
     syslog_enabled: bool,
     keep_alive_field: *mut libc::c_void,
     mime_map: *mut libc::c_void,
@@ -308,11 +308,11 @@ impl Server {
             want_keepalive: true,
             want_server_id: true,
             server_hdr: String::new(),
-            auth_key: null_mut(),
+            auth_key: None,
             num_requests: 0,
             total_in: 0,
             total_out: 0,
-            accepting: 1,
+            accepting: true,
             syslog_enabled: false,
             keep_alive_field: null_mut(),
             mime_map: null_mut(),
@@ -461,9 +461,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
                 if !user_pass.contains(':') {
                     return Err("expected user:pass after --auth".to_string());
                 }
-                let auth_key = format!("Basic {}", Base64Encoded(user_pass.as_bytes()));
-                // freed by `free_server_fields`
-                server.auth_key = CString::new(auth_key).unwrap().into_raw();
+                server.auth_key = Some(format!("Basic {}", Base64Encoded(user_pass.as_bytes())));
             }
             "--ipv6" => server.inet6 = true,
             _ => {
@@ -479,12 +477,6 @@ fn free_server_fields(server: &mut Server) {
     assert!(!server.wwwroot.is_null());
     unsafe { CString::from_raw(server.wwwroot) };
     server.wwwroot = null_mut();
-
-    // free(srv.auth_key);
-    if !server.auth_key.is_null() {
-        unsafe { CString::from_raw(server.auth_key) };
-        server.auth_key = null_mut();
-    }
 
     if !server.pidfile_name.is_null() {
         unsafe { CString::from_raw(server.pidfile_name) };
@@ -1140,7 +1132,7 @@ fn default_reply(
         server.server_hdr,
         keep_alive(server, conn),
         conn.reply_length,
-        if !server.auth_key.is_null() {
+        if server.auth_key.is_some() {
             "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
         } else {
             ""
@@ -1604,17 +1596,12 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
 
     let result = parse_request(server, conn);
 
-    let auth_key = if server.auth_key.is_null() {
-        None
-    } else {
-        Some(unsafe { CStr::from_ptr(server.auth_key) }.to_str().unwrap())
-    };
-
     if !result {
         let reason = "You sent a request that the server couldn't understand.";
         default_reply(server, conn, 400, "Bad Request", reason);
-    } else if auth_key.is_some()
-        && (conn.authorization.is_none() || conn.authorization.as_deref() != auth_key)
+    } else if server.auth_key.is_some()
+        && (conn.authorization.is_none()
+            || conn.authorization.as_deref() != server.auth_key.as_deref())
     {
         let reason = "Access denied due to invalid credentials.";
         default_reply(server, conn, 401, "Unauthorized", reason);
@@ -1869,7 +1856,7 @@ fn log_connection(server: &Server, conn: &Connection) {
 fn free_connection(server: &mut Server, conn: &mut Connection) {
     log_connection(server, conn);
 
-    server.accepting = 1; // Try to resume accepting if we ran out of sockets.
+    server.accepting = true; // Try to resume accepting if we ran out of sockets.
 }
 
 /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
@@ -1974,7 +1961,7 @@ fn accept_connection(server: &mut Server) {
         Err(e) => {
             // Failed to accept, but try to keep serving existing connections.
             if e.as_errno() == Some(Errno::EMFILE) || e.as_errno() == Some(Errno::ENFILE) {
-                server.accepting = 0;
+                server.accepting = false;
             }
             eprintln!("warning: accept() failed: {}", e);
             return;
@@ -2019,7 +2006,7 @@ fn httpd_poll(server: &mut Server) {
     let mut send_set = FdSet::new();
     let mut timeout_required = false;
 
-    if server.accepting == 1 {
+    if server.accepting {
         recv_set.insert(server.sockin);
     }
 
