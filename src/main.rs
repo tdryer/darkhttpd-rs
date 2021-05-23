@@ -119,7 +119,9 @@ fn main() {
         COPYRIGHT,
     );
     init_connections_list(&mut server);
-    parse_commandline(&mut server);
+    if let Err(e) = parse_commandline(&mut server) {
+        abort!("{}", e);
+    }
 
     if server.want_server_id {
         server.server_hdr = format!(
@@ -338,12 +340,7 @@ fn parse_num<T: FromStr>(number: &str) -> Result<T, String> {
         .map_err(|_| format!("number {} is invalid", number))?)
 }
 
-fn parse_commandline(server: &mut Server) {
-    if let Err(e) = parse_commandline_rust(server) {
-        abort!("{}", e);
-    }
-}
-fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
+fn parse_commandline(server: &mut Server) -> Result<(), String> {
     // TODO: allow non-UTF-8 filename arguments?
     let argv: Vec<String> = std::env::args().collect();
 
