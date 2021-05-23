@@ -128,16 +128,16 @@ fn main() {
     init_sockin(&mut server);
 
     // open logfile
-    if !server.logfile_name.is_null() {
+    if let Some(logfile_name) = server.logfile_name.as_deref() {
         let mode = CString::new("ab").unwrap();
         server.logfile = unsafe {
-            libc::fopen(server.logfile_name, mode.as_c_str().as_ptr()) as *mut libc::FILE
+            libc::fopen(
+                CString::new(logfile_name).unwrap().as_c_str().as_ptr(),
+                mode.as_c_str().as_ptr(),
+            ) as *mut libc::FILE
         };
         if server.logfile.is_null() {
             // TODO: add errno / error description
-            let logfile_name = unsafe { CStr::from_ptr(server.logfile_name) }
-                .to_str()
-                .unwrap();
             abort!("opening logfile: fopen(\"{}\")", logfile_name);
         }
     }
@@ -264,7 +264,7 @@ pub struct Server {
     now: libc::time_t,
     inet6: bool,
     wwwroot: *mut libc::c_char,
-    logfile_name: *mut libc::c_char,
+    logfile_name: Option<String>,
     logfile: *mut libc::FILE,
     pidfile_name: *mut libc::c_char,
     pidfile_fd: libc::c_int,
@@ -303,7 +303,7 @@ impl Server {
             now: 0,
             inet6: false,
             wwwroot: null_mut(),
-            logfile_name: null_mut(),
+            logfile_name: None,
             logfile: null_mut(),
             pidfile_name: null_mut(),
             pidfile_fd: -1,
@@ -390,7 +390,7 @@ fn parse_commandline_rust(server: &mut Server) -> Result<(), String> {
             "--log" => {
                 let filename = args.next().ok_or("missing filename after --log")?;
                 // freed by `free_server_fields`
-                server.logfile_name = CString::new(filename).unwrap().into_raw();
+                server.logfile_name = Some(filename.to_string());
             }
             "--chroot" => server.want_chroot = true,
             "--daemon" => server.want_daemon = true,
@@ -494,11 +494,6 @@ fn free_server_fields(server: &mut Server) {
     if !server.pidfile_name.is_null() {
         unsafe { CString::from_raw(server.pidfile_name) };
         server.pidfile_name = null_mut();
-    }
-
-    if !server.logfile_name.is_null() {
-        unsafe { CString::from_raw(server.logfile_name) };
-        server.logfile_name = null_mut();
     }
 
     if !server.bindaddr.is_null() {
