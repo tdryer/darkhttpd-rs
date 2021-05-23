@@ -117,13 +117,9 @@ fn main() {
     parse_commandline(&mut server);
     set_keep_alive_field(&mut server);
 
-    let server_hdr = if server.want_server_id {
-        format!("Server: {}\r\n", server.pkgname)
-    } else {
-        String::new()
-    };
-    // freed later in this function
-    server.server_hdr = CString::new(server_hdr).unwrap().into_raw();
+    if server.want_server_id {
+        server.server_hdr = format!("Server: {}\r\n", server.pkgname);
+    }
 
     init_sockin(&mut server);
 
@@ -225,7 +221,6 @@ fn main() {
     }
 
     // free memory
-    unsafe { CString::from_raw(server.server_hdr) };
     free_server_fields(&mut server);
 
     // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
@@ -273,7 +268,7 @@ pub struct Server {
     want_accf: bool,
     want_keepalive: bool,
     want_server_id: bool,
-    server_hdr: *mut libc::c_char,
+    server_hdr: String,
     auth_key: *mut libc::c_char,
     num_requests: u64,
     total_in: u64,
@@ -312,7 +307,7 @@ impl Server {
             want_accf: false,
             want_keepalive: true,
             want_server_id: true,
-            server_hdr: null_mut(),
+            server_hdr: String::new(),
             auth_key: null_mut(),
             num_requests: 0,
             total_in: 0,
@@ -1113,9 +1108,6 @@ fn default_reply(
     errname: &str,
     reason: &str,
 ) {
-    assert!(!server.server_hdr.is_null());
-    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-
     let reply = format!(
         "<html><head><title>{} {}</title></head><body>\n\
         <h1>{}</h1>\n\
@@ -1145,7 +1137,7 @@ fn default_reply(
         errcode,
         errname,
         HttpDate(server.now),
-        server_hdr,
+        server.server_hdr,
         keep_alive(server, conn),
         conn.reply_length,
         if !server.auth_key.is_null() {
@@ -1162,9 +1154,6 @@ fn default_reply(
 
 /// A redirect reply.
 fn redirect(server: &Server, conn: &mut Connection, location: &str) {
-    assert!(!server.server_hdr.is_null());
-    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-
     let reply = format!(
         "<html><head><title>301 Moved Permanently</title></head><body>\n\
         <h1>Moved Permanently</h1>\n\
@@ -1189,7 +1178,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         Content-Type: text/html; charset=UTF-8\r\n\
         \r\n",
         HttpDate(server.now),
-        server_hdr,
+        server.server_hdr,
         location,
         keep_alive(server, conn),
         conn.reply_length,
@@ -1241,9 +1230,6 @@ impl std::fmt::Display for Listing {
 
 /// A directory listing reply.
 fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, decoded_url: &str) {
-    assert!(!server.server_hdr.is_null());
-    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-
     let mut entries: Vec<_> = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(e) => {
@@ -1285,7 +1271,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         Content-Type: text/html; charset=UTF-8\r\n\
         \r\n",
         HttpDate(server.now),
-        server_hdr,
+        server.server_hdr,
         keep_alive(server, conn),
         conn.reply_length,
     );
@@ -1304,8 +1290,6 @@ fn file_exists(path: &str) -> bool {
 
 /// A not modified reply.
 fn not_modified(server: &Server, conn: &mut Connection) {
-    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
-
     let headers = format!(
         "HTTP/1.1 304 Not Modified\r\n\
         Date: {}\r\n\
@@ -1314,7 +1298,7 @@ fn not_modified(server: &Server, conn: &mut Connection) {
         {}\
         \r\n",
         HttpDate(server.now),
-        server_hdr,
+        server.server_hdr,
         keep_alive(server, conn),
     );
     conn.header = Some(headers);
@@ -1373,7 +1357,6 @@ fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
 /// Process a GET/HEAD request.
 fn process_get(server: &Server, conn: &mut Connection) {
     let wwwroot = unsafe { CStr::from_ptr(server.wwwroot) }.to_str().unwrap();
-    let server_hdr = unsafe { CStr::from_ptr(server.server_hdr).to_str().unwrap() };
 
     // strip query params
     let url = conn.url.as_ref().unwrap();
@@ -1525,7 +1508,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
             Last-Modified: {}\r\n\
             \r\n",
             HttpDate(server.now),
-            server_hdr,
+            server.server_hdr,
             keep_alive(server, conn),
             conn.reply_length,
             from,
@@ -1552,7 +1535,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         Last-Modified: {}\r\n\
         \r\n",
         HttpDate(server.now),
-        server_hdr,
+        server.server_hdr,
         keep_alive(server, conn),
         conn.reply_length,
         mimetype,
