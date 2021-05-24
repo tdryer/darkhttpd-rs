@@ -134,7 +134,8 @@ fn main() -> Result<()> {
     let mut lifeline_write = -1;
     let mut fd_null = -1;
     if server.want_daemon {
-        daemonize_start(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
+        daemonize_start(&mut lifeline_read, &mut lifeline_write, &mut fd_null)
+            .context("failed to daemonize")?;
     }
 
     // set signal handlers
@@ -179,7 +180,8 @@ fn main() -> Result<()> {
         .transpose()?;
 
     if server.want_daemon {
-        daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
+        daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null)
+            .context("failed to daemonize")?;
     }
 
     let mut connections = Vec::new();
@@ -529,53 +531,48 @@ fn daemonize_start(
     lifeline_read: &mut libc::c_int,
     lifeline_write: &mut libc::c_int,
     fd_null: &mut libc::c_int,
-) {
+) -> Result<()> {
     // create lifeline pipe
-    match pipe() {
-        Ok((read, write)) => {
-            *lifeline_read = read;
-            *lifeline_write = write;
-        }
-        Err(e) => abort!("pipe failed: {}", e),
-    }
+    let pipe_fds = pipe().context("failed to create pipe")?;
+    // TODO: return these
+    *lifeline_read = pipe_fds.0;
+    *lifeline_write = pipe_fds.1;
 
     // populate fd_null
-    *fd_null = match OpenOptions::new().read(true).write(true).open(PATH_DEVNULL) {
-        Ok(file) => file.into_raw_fd(),
-        Err(e) => abort!("open {} failed: {}", PATH_DEVNULL, e),
-    };
+    *fd_null = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(PATH_DEVNULL)
+        .with_context(|| format!("failed to open {}", PATH_DEVNULL))?
+        .into_raw_fd();
 
-    match unsafe { fork() } {
-        Ok(ForkResult::Parent { child }) => {
-            // wait for the child
-            if let Err(e) = close(*lifeline_write) {
-                eprintln!("warning: failed to close lifeline in parent: {}", e);
-            }
-            let mut buf = [0; 1];
-            if let Err(e) = read(*lifeline_read, &mut buf) {
-                eprintln!("warning: failed read lifeline in parent: {}", e);
-            }
-            // exit with status depending on child status
-            match waitpid(child, Some(WaitPidFlag::WNOHANG)) {
-                Ok(WaitStatus::StillAlive) => std::process::exit(0),
-                Ok(WaitStatus::Exited(_, status)) => std::process::exit(status),
-                Ok(_) => abort!("waitpid returned unknown status"),
-                Err(e) => abort!("waitpid failed: {}", e),
-            }
+    if let ForkResult::Parent { child } = unsafe { fork() }.context("failed to fork process")? {
+        // wait for the child
+        if let Err(e) = close(*lifeline_write) {
+            eprintln!("warning: failed to close lifeline in parent: {}", e);
         }
-        Ok(ForkResult::Child) => {} // continue initializing
-        Err(e) => abort!("fork failed: {}", e),
+        let mut buf = [0; 1];
+        if let Err(e) = read(*lifeline_read, &mut buf) {
+            eprintln!("warning: failed read lifeline in parent: {}", e);
+        }
+        // exit with status depending on child status
+        match waitpid(child, Some(WaitPidFlag::WNOHANG))
+            .with_context(|| format!("failed to wait for process {}", child))?
+        {
+            WaitStatus::StillAlive => std::process::exit(0),
+            WaitStatus::Exited(_, status) => std::process::exit(status),
+            _ => return Err(anyhow!("waitpid returned unknown status")),
+        }
     }
+    Ok(())
 }
 
 fn daemonize_finish(
     lifeline_read: &mut libc::c_int,
     lifeline_write: &mut libc::c_int,
     fd_null: &mut libc::c_int,
-) {
-    if let Err(e) = setsid() {
-        abort!("setsid failed: {}", e);
-    }
+) -> Result<()> {
+    setsid().context("failed to create session")?;
     if let Err(e) = close(*lifeline_read) {
         eprintln!(
             "warning: failed to close read end of lifeline in child: {}",
@@ -599,6 +596,7 @@ fn daemonize_finish(
     if *fd_null > 2 {
         close(*fd_null).ok();
     }
+    Ok(())
 }
 
 const BASE64_TABLE: &[char] = &[
