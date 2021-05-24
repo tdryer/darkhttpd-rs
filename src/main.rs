@@ -13,6 +13,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use anyhow::{anyhow, Context, Result};
 use chrono::{Local, TimeZone, Utc};
 use nix::errno::Errno;
 use nix::sys::select::{select, FdSet};
@@ -108,7 +109,7 @@ macro_rules! abort {
 const INVALID_UID: libc::uid_t = libc::uid_t::MAX;
 const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
 
-fn main() {
+fn main() -> Result<()> {
     let mut server = Server::new();
 
     println!(
@@ -117,9 +118,7 @@ fn main() {
         env!("CARGO_PKG_VERSION"),
         COPYRIGHT,
     );
-    if let Err(e) = parse_commandline(&mut server) {
-        abort!("{}", e);
-    }
+    parse_commandline(&mut server)?;
 
     if server.want_server_id {
         server.server_hdr = format!(
@@ -225,6 +224,7 @@ fn main() {
         println!("Requests: {}", server.num_requests);
         println!("Bytes: {} in, {} out", server.total_in, server.total_out);
     }
+    Ok(())
 }
 
 /// Where to put the access log.
@@ -336,13 +336,7 @@ fn getrusage() -> std::io::Result<libc::rusage> {
     Ok(unsafe { rusage.assume_init() })
 }
 
-fn parse_num<T: FromStr>(number: &str) -> Result<T, String> {
-    Ok(number
-        .parse()
-        .map_err(|_| format!("number {} is invalid", number))?)
-}
-
-fn parse_commandline(server: &mut Server) -> Result<(), String> {
+fn parse_commandline(server: &mut Server) -> Result<()> {
     // TODO: allow non-UTF-8 filename arguments?
     let argv: Vec<String> = std::env::args().collect();
 
@@ -367,36 +361,40 @@ fn parse_commandline(server: &mut Server) -> Result<(), String> {
     while let Some(arg) = args.next() {
         match arg {
             "--port" => {
-                let number = args.next().ok_or("missing number after --port")?;
-                server.bindport = parse_num(number)?;
+                let number = args.next().context("missing number after --port")?;
+                server.bindport = number
+                    .parse()
+                    .with_context(|| format!("port number {} is invalid", number))?;
             }
             "--addr" => {
-                let addr = args.next().ok_or("missing ip after --addr")?;
+                let addr = args.next().context("missing ip after --addr")?;
                 server.bindaddr = Some(addr.to_string());
             }
             "--maxconn" => {
-                server.max_connections =
-                    parse_num(args.next().ok_or("missing number after --maxconn")?)?;
+                let number = args.next().context("missing number after --maxconn")?;
+                server.max_connections = number
+                    .parse()
+                    .with_context(|| format!("maxconn number {} is invalid", number))?;
             }
             "--log" => {
-                let filename = args.next().ok_or("missing filename after --log")?;
+                let filename = args.next().context("missing filename after --log")?;
                 server.log_sink = LogSink::File(BufWriter::new(
                     OpenOptions::new()
                         .append(true)
                         .create(true)
                         .open(filename)
-                        .map_err(|e| format!("failed to open log file: {}", e))?,
+                        .with_context(|| format!("failed to open log file {}", filename))?,
                 ))
             }
             "--chroot" => server.want_chroot = true,
             "--daemon" => server.want_daemon = true,
             "--index" => {
-                let filename = args.next().ok_or("missing filename after --index")?;
+                let filename = args.next().context("missing filename after --index")?;
                 server.index_name = filename.to_string();
             }
             "--no-listing" => server.no_listing = true,
             "--mimetypes" => {
-                let filename = args.next().ok_or("missing filename after --mimetypes")?;
+                let filename = args.next().context("missing filename after --mimetypes")?;
                 server
                     .mime_map
                     .parse_extension_map_file(&OsString::from(filename));
@@ -404,70 +402,72 @@ fn parse_commandline(server: &mut Server) -> Result<(), String> {
             "--default-mimetype" => {
                 server.mime_map.default_mimetype = args
                     .next()
-                    .ok_or("missing string after --default-mimetype")?
+                    .context("missing string after --default-mimetype")?
                     .to_string();
             }
             "--uid" => {
-                let uid = args.next().ok_or("missing uid after --uid")?;
-                let user1 = User::from_name(uid)
-                    .map_err(|e| format!("getpwnam failed: {}", e.as_errno().unwrap().desc()))?;
-                let user2 = parse_num(uid)
+                let uid = args.next().context("missing uid after --uid")?;
+                let user1 = User::from_name(uid).context("getpwnam failed")?;
+                let user2 = uid
+                    .parse()
                     .ok()
                     .and_then(|uid| User::from_uid(Uid::from_raw(uid)).transpose())
                     .transpose()
-                    .map_err(|e| format!("getpwuid failed: {}", e.as_errno().unwrap().desc()))?;
+                    .context("getpwuid failed")?;
                 server.drop_uid = user1
                     .or(user2)
-                    .ok_or_else(|| format!("no such uid: `{}'", uid))?
+                    .with_context(|| format!("no such uid: `{}'", uid))?
                     .uid
                     .as_raw();
             }
             "--gid" => {
-                let gid = args.next().ok_or("missing gid after --gid")?;
-                let group1 = Group::from_name(gid)
-                    .map_err(|e| format!("getgrnam failed: {}", e.as_errno().unwrap().desc()))?;
-                let group2 = parse_num(gid)
+                let gid = args.next().context("missing gid after --gid")?;
+                let group1 = Group::from_name(gid).context("getgrnam failed")?;
+                let group2 = gid
+                    .parse()
                     .ok()
                     .and_then(|gid| Group::from_gid(Gid::from_raw(gid)).transpose())
                     .transpose()
-                    .map_err(|e| format!("getgrgid failed: {}", e.as_errno().unwrap().desc()))?;
+                    .context("getgrgid failed")?;
                 server.drop_gid = group1
                     .or(group2)
-                    .ok_or_else(|| format!("no such gid: `{}'", gid))?
+                    .with_context(|| format!("no such gid: `{}'", gid))?
                     .gid
                     .as_raw();
             }
             "--pidfile" => {
-                let filename = args.next().ok_or("missing filename after --pidfile")?;
+                let filename = args.next().context("missing filename after --pidfile")?;
                 server.pidfile_name = Some(filename.to_string());
             }
             "--no-keepalive" => server.want_keepalive = false,
             "--accf" => server.want_accf = true, // TODO: remove?
             "--syslog" => server.log_sink = LogSink::Syslog,
             "--forward" => {
-                let host = args.next().ok_or("missing host after --forward")?;
-                let url = args.next().ok_or("missing url after --forward")?;
+                let host = args.next().context("missing host after --forward")?;
+                let url = args.next().context("missing url after --forward")?;
                 server.forward_map.insert(host.to_string(), url.to_string());
             }
             "--forward-all" => {
-                let url = args.next().ok_or("missing url after --forward-all")?;
+                let url = args.next().context("missing url after --forward-all")?;
                 server.forward_all_url = Some(url.to_string());
             }
             "--no-server-id" => server.want_server_id = false,
             "--timeout" => {
-                server.timeout_secs =
-                    parse_num(args.next().ok_or("missing number after --timeout")?)?;
+                let number = args.next().context("missing number after --timeout")?;
+                server.timeout_secs = number
+                    .parse()
+                    .with_context(|| format!("timeout number {} is invalid", number))?;
             }
             "--auth" => {
-                let user_pass = args.next().ok_or("missing user:pass after --auth")?;
+                let user_pass = args.next().context("missing user:pass after --auth")?;
                 if !user_pass.contains(':') {
-                    return Err("expected user:pass after --auth".to_string());
+                    return Err(anyhow!("expected user:pass after --auth"));
                 }
                 server.auth_key = Some(format!("Basic {}", Base64Encoded(user_pass.as_bytes())));
             }
             "--ipv6" => server.inet6 = true,
             _ => {
-                return Err(format!("unknown argument `{}'", arg));
+                return Err(anyhow!("unknown argument `{}'", arg));
             }
         }
     }
