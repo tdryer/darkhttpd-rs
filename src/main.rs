@@ -172,7 +172,11 @@ fn main() -> Result<()> {
         println!("set uid to {}", uid);
     }
 
-    let pidfile = server.pidfile_name.take().map(PidFile::create);
+    let pidfile = server
+        .pidfile_name
+        .take()
+        .map(PidFile::create)
+        .transpose()?;
 
     if server.want_daemon {
         daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
@@ -188,7 +192,7 @@ fn main() -> Result<()> {
     // clean exit
     close(server.sockin).context("failed to close listening socket")?;
 
-    pidfile.map(|pidfile| pidfile.remove());
+    pidfile.map(|pidfile| pidfile.remove()).transpose()?;
 
     // free connections
     for mut conn in connections.drain(..) {
@@ -466,61 +470,56 @@ struct PidFile {
     fd: RawFd,
 }
 impl PidFile {
-    // TODO: Return Err instead of aborting
-    fn create(pidfile_name: String) -> Self {
+    fn create(pidfile_name: String) -> Result<Self> {
         // Create the pidfile, failing if it already exists.
         // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
-        let mut pidfile = match OpenOptions::new()
+        let mut pidfile = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_CREAT | libc::O_EXCL)
             .mode(PIDFILE_MODE)
             .open(&pidfile_name)
-        {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                abort!(
-                    "daemon already running with PID {}",
-                    Self::read(&pidfile_name)
-                );
-            }
-            Err(e) => abort!("can't create pidfile {}: {}", &pidfile_name, e),
-        };
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    match Self::read(&pidfile_name) {
+                        Ok(pid) => anyhow!("daemon already running with pid {}", pid),
+                        Err(e) => e,
+                    }
+                } else {
+                    anyhow::Error::new(e)
+                        .context(format!("failed to create pidfile {}", pidfile_name))
+                }
+            })?;
 
         // Write pid to the pidfile.
         if let Err(e) = write!(pidfile, "{}", getpid()) {
-            Self::remove_raw(&pidfile_name, pidfile.into_raw_fd());
-            abort!("pidfile write failed: {}", e);
+            Self::remove_raw(&pidfile_name, pidfile.into_raw_fd()).ok();
+            return Err(e).with_context(|| format!("failed to write to pidfile {}", pidfile_name));
         };
 
-        Self {
+        Ok(Self {
             name: pidfile_name,
             fd: pidfile.into_raw_fd(),
-        }
-    }
-    fn read(pidfile: &str) -> Pid {
-        let mut pidfile = match File::open(pidfile) {
-            Ok(file) => file,
-            Err(e) => abort!("failed to open pidfile: {}", e),
-        };
-        let mut buf = String::new();
-        if let Err(e) = pidfile.read_to_string(&mut buf) {
-            abort!("read from pidfile failed: {}", e);
-        }
-        Pid::from_raw(match buf.parse() {
-            Ok(pid) => pid,
-            Err(e) => abort!("invalid pidfile contents: {}", e),
         })
     }
-    fn remove(self) {
-        Self::remove_raw(&self.name, self.fd);
+    fn read(pidfile_name: &str) -> Result<Pid> {
+        let mut pidfile = File::open(pidfile_name)
+            .with_context(|| format!("failed to open pidfile {}", pidfile_name))?;
+        let mut buf = String::new();
+        pidfile
+            .read_to_string(&mut buf)
+            .with_context(|| format!("failed to read pidfile {}", pidfile_name))?;
+        Ok(Pid::from_raw(
+            buf.parse().context("invalid pidfile contents")?,
+        ))
     }
-    fn remove_raw(pidfile_name: &str, pidfile_fd: RawFd) {
-        if let Err(e) = remove_file(pidfile_name) {
-            abort!("unlink(pidfile) failed: {}", e);
-        }
-        if let Err(e) = close(pidfile_fd) {
-            abort!("close(pidfile) failed: {}", e);
-        }
+    fn remove(self) -> Result<()> {
+        Self::remove_raw(&self.name, self.fd)
+    }
+    fn remove_raw(pidfile_name: &str, pidfile_fd: RawFd) -> Result<()> {
+        remove_file(pidfile_name)
+            .with_context(|| format!("failed to remove pidfile {}", pidfile_name))?;
+        close(pidfile_fd).with_context(|| format!("failed to close pidfile {}", pidfile_name))?;
+        Ok(())
     }
 }
 
