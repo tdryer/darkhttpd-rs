@@ -137,27 +137,22 @@ fn main() -> Result<()> {
         daemonize_start(&mut lifeline_read, &mut lifeline_write, &mut fd_null);
     }
 
-    // install signal handlers
-    if let Err(e) = unsafe { signal(Signal::SIGPIPE, SigHandler::SigIgn) } {
-        abort!("signal(ignore SIGPIPE): {}", e);
-    }
-    if let Err(e) = unsafe { signal(Signal::SIGINT, SigHandler::Handler(stop_running)) } {
-        abort!("signal(SIGINT): {}", e);
-    }
-    if let Err(e) = unsafe { signal(Signal::SIGTERM, SigHandler::Handler(stop_running)) } {
-        abort!("signal(SIGTERM): {}", e);
-    }
+    // set signal handlers
+    unsafe { signal(Signal::SIGPIPE, SigHandler::SigIgn) }
+        .context("failed to set SIGPIPE handler")?;
+    unsafe { signal(Signal::SIGINT, SigHandler::Handler(stop_running)) }
+        .context("failed to set SIGINT handler")?;
+    unsafe { signal(Signal::SIGTERM, SigHandler::Handler(stop_running)) }
+        .context("failed to set SIGTERM handler")?;
 
     if server.want_chroot {
         // Force reading the local timezone before chroot makes this impossible.
         Local::now();
 
-        if let Err(e) = chdir(server.wwwroot.as_str()) {
-            abort!("chdir({}): {}", &server.wwwroot, e);
-        }
-        if let Err(e) = chroot(server.wwwroot.as_str()) {
-            abort!("chroot({}): {}", server.wwwroot, e);
-        }
+        chdir(server.wwwroot.as_str())
+            .with_context(|| format!("failed to change working directory to {}", server.wwwroot))?;
+        chroot(server.wwwroot.as_str())
+            .with_context(|| format!("failed to change root directory to {}", server.wwwroot))?;
         println!("chrooted to `{}'", &server.wwwroot);
 
         server.wwwroot.clear();
@@ -165,20 +160,15 @@ fn main() -> Result<()> {
 
     if server.drop_gid != INVALID_GID {
         let gid = Gid::from_raw(server.drop_gid);
-        if let Err(e) = setgroups(&[gid]) {
-            abort!("setgroups([{}]): {}", gid, e);
-        }
-        if let Err(e) = setgid(gid) {
-            abort!("setgid({}): {}", gid, e);
-        }
+        setgroups(&[gid])
+            .with_context(|| format!("failed to set supplementary group IDs to [{}]", gid))?;
+        setgid(gid).with_context(|| format!("failed to set group ID to {}", gid))?;
         println!("set gid to {}", gid);
     }
 
     if server.drop_uid != INVALID_UID {
         let uid = Uid::from_raw(server.drop_uid);
-        if let Err(e) = setuid(uid) {
-            abort!("setgid({}): {}", uid, e);
-        }
+        setuid(uid).with_context(|| format!("failed to set user ID to {}", uid))?;
         println!("set uid to {}", uid);
     }
 
@@ -196,9 +186,7 @@ fn main() -> Result<()> {
     }
 
     // clean exit
-    if let Err(e) = close(server.sockin) {
-        abort!("failed to close listening socket: {}", e);
-    };
+    close(server.sockin).context("failed to close listening socket")?;
 
     pidfile.map(|pidfile| pidfile.remove());
 
@@ -210,10 +198,7 @@ fn main() -> Result<()> {
     // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
     // will be closed. It's not clear whether this was intentional.
     if !matches!(server.log_sink, LogSink::Stdout) {
-        let rusage = match getrusage() {
-            Ok(rusage) => rusage,
-            Err(e) => abort!("getrusage failed: {}", e),
-        };
+        let rusage = getrusage().context("failed to get resource usage")?;
         println!(
             "CPU time used: {}.{:02} user, {}.{:02} system",
             rusage.ru_utime.tv_sec,
