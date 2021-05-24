@@ -337,28 +337,30 @@ fn getrusage() -> std::io::Result<libc::rusage> {
 }
 
 fn parse_commandline(server: &mut Server) -> Result<()> {
-    // TODO: allow non-UTF-8 filename arguments?
-    let argv: Vec<String> = std::env::args().collect();
+    // TODO: use std::env::args_os to allow non-UTF-8 filenames
+    let mut args = std::env::args();
 
-    if (argv.len() < 2) || (argv.len() == 2 && argv[1] == "--help") {
-        usage(server, &argv[0]); // no wwwroot given
-        std::process::exit(0);
-    }
+    let name = args.next().expect("expected at least one argument");
+
+    match args.next().as_deref() {
+        None | Some("--help") => {
+            usage(server, &name); // no wwwroot given
+            std::process::exit(0);
+        }
+        Some(wwwroot) => {
+            server.wwwroot = wwwroot.to_string();
+            // Strip ending slash.
+            if server.wwwroot.ends_with('/') {
+                server.wwwroot.pop();
+            }
+        }
+    };
 
     if getuid().is_root() {
         server.bindport = 80;
     }
 
-    // Strip ending slash.
-    // TODO: How does this work if the root is "/"?
-    let mut wwwroot: &str = &argv[1];
-    if wwwroot.ends_with('/') {
-        wwwroot = &wwwroot[0..wwwroot.len() - 1];
-    }
-    server.wwwroot = wwwroot.to_string();
-
-    let args = &mut argv[2..].iter().map(|s| s.as_str());
-    while let Some(arg) = args.next() {
+    while let Some(arg) = args.next().as_deref() {
         match arg {
             "--port" => {
                 let number = args.next().context("missing number after --port")?;
@@ -367,8 +369,7 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
                     .with_context(|| format!("port number {} is invalid", number))?;
             }
             "--addr" => {
-                let addr = args.next().context("missing ip after --addr")?;
-                server.bindaddr = Some(addr.to_string());
+                server.bindaddr = Some(args.next().context("missing ip after --addr")?);
             }
             "--maxconn" => {
                 let number = args.next().context("missing number after --maxconn")?;
@@ -382,15 +383,14 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
                     OpenOptions::new()
                         .append(true)
                         .create(true)
-                        .open(filename)
+                        .open(&filename)
                         .with_context(|| format!("failed to open log file {}", filename))?,
                 ))
             }
             "--chroot" => server.want_chroot = true,
             "--daemon" => server.want_daemon = true,
             "--index" => {
-                let filename = args.next().context("missing filename after --index")?;
-                server.index_name = filename.to_string();
+                server.index_name = args.next().context("missing filename after --index")?;
             }
             "--no-listing" => server.no_listing = true,
             "--mimetypes" => {
@@ -402,12 +402,11 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
             "--default-mimetype" => {
                 server.mime_map.default_mimetype = args
                     .next()
-                    .context("missing string after --default-mimetype")?
-                    .to_string();
+                    .context("missing string after --default-mimetype")?;
             }
             "--uid" => {
                 let uid = args.next().context("missing uid after --uid")?;
-                let user1 = User::from_name(uid).context("getpwnam failed")?;
+                let user1 = User::from_name(&uid).context("getpwnam failed")?;
                 let user2 = uid
                     .parse()
                     .ok()
@@ -422,7 +421,7 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
             }
             "--gid" => {
                 let gid = args.next().context("missing gid after --gid")?;
-                let group1 = Group::from_name(gid).context("getgrnam failed")?;
+                let group1 = Group::from_name(&gid).context("getgrnam failed")?;
                 let group2 = gid
                     .parse()
                     .ok()
@@ -436,8 +435,8 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
                     .as_raw();
             }
             "--pidfile" => {
-                let filename = args.next().context("missing filename after --pidfile")?;
-                server.pidfile_name = Some(filename.to_string());
+                server.pidfile_name =
+                    Some(args.next().context("missing filename after --pidfile")?);
             }
             "--no-keepalive" => server.want_keepalive = false,
             "--accf" => server.want_accf = true, // TODO: remove?
@@ -445,11 +444,11 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
             "--forward" => {
                 let host = args.next().context("missing host after --forward")?;
                 let url = args.next().context("missing url after --forward")?;
-                server.forward_map.insert(host.to_string(), url.to_string());
+                server.forward_map.insert(host, url);
             }
             "--forward-all" => {
-                let url = args.next().context("missing url after --forward-all")?;
-                server.forward_all_url = Some(url.to_string());
+                server.forward_all_url =
+                    Some(args.next().context("missing url after --forward-all")?)
             }
             "--no-server-id" => server.want_server_id = false,
             "--timeout" => {
