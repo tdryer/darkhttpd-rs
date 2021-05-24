@@ -9,7 +9,7 @@ use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
 };
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -467,13 +467,13 @@ const PIDFILE_MODE: u32 = 0o600;
 #[derive(Debug)]
 struct PidFile {
     name: String,
-    fd: RawFd,
+    file: File,
 }
 impl PidFile {
     fn create(pidfile_name: String) -> Result<Self> {
         // Create the pidfile, failing if it already exists.
         // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
-        let mut pidfile = OpenOptions::new()
+        let mut pidfile_file = OpenOptions::new()
             .write(true)
             .custom_flags(libc::O_CREAT | libc::O_EXCL)
             .mode(PIDFILE_MODE)
@@ -491,14 +491,14 @@ impl PidFile {
             })?;
 
         // Write pid to the pidfile.
-        if let Err(e) = write!(pidfile, "{}", getpid()) {
-            Self::remove_raw(&pidfile_name, pidfile.into_raw_fd()).ok();
+        if let Err(e) = write!(pidfile_file, "{}", getpid()) {
+            Self::remove_raw(&pidfile_name, pidfile_file).ok();
             return Err(e).with_context(|| format!("failed to write to pidfile {}", pidfile_name));
         };
 
         Ok(Self {
             name: pidfile_name,
-            fd: pidfile.into_raw_fd(),
+            file: pidfile_file,
         })
     }
     fn read(pidfile_name: &str) -> Result<Pid> {
@@ -513,12 +513,12 @@ impl PidFile {
         ))
     }
     fn remove(self) -> Result<()> {
-        Self::remove_raw(&self.name, self.fd)
+        Self::remove_raw(&self.name, self.file)
     }
-    fn remove_raw(pidfile_name: &str, pidfile_fd: RawFd) -> Result<()> {
+    fn remove_raw(pidfile_name: &str, pidfile_file: File) -> Result<()> {
         remove_file(pidfile_name)
             .with_context(|| format!("failed to remove pidfile {}", pidfile_name))?;
-        close(pidfile_fd).with_context(|| format!("failed to close pidfile {}", pidfile_name))?;
+        drop(pidfile_file);
         Ok(())
     }
 }
