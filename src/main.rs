@@ -9,7 +9,7 @@ use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
 };
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -29,6 +29,7 @@ use nix::unistd::{
 
 const COPYRIGHT: &str = "copyright (c) 2021 Tom Dryer";
 const DEFAULT_INDEX_NAME: &str = "index.html";
+const PATH_DEVNULL: &str = "/dev/null";
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -130,13 +131,10 @@ fn main() -> Result<()> {
 
     init_sockin(&mut server);
 
-    let mut lifeline_read = -1;
-    let mut lifeline_write = -1;
-    let mut fd_null = -1;
-    if server.want_daemon {
-        daemonize_start(&mut lifeline_read, &mut lifeline_write, &mut fd_null)
-            .context("failed to daemonize")?;
-    }
+    let daemonize = server
+        .want_daemon
+        .then(|| Daemonize::start().context("failed to daemonize"))
+        .transpose()?;
 
     // set signal handlers
     unsafe { signal(Signal::SIGPIPE, SigHandler::SigIgn) }
@@ -179,10 +177,9 @@ fn main() -> Result<()> {
         .map(PidFile::create)
         .transpose()?;
 
-    if server.want_daemon {
-        daemonize_finish(&mut lifeline_read, &mut lifeline_write, &mut fd_null)
-            .context("failed to daemonize")?;
-    }
+    daemonize
+        .map(|daemonize| daemonize.finish().context("failed to daemonize"))
+        .transpose()?;
 
     let mut connections = Vec::new();
 
@@ -525,78 +522,75 @@ impl PidFile {
     }
 }
 
-const PATH_DEVNULL: &str = "/dev/null";
-
-fn daemonize_start(
-    lifeline_read: &mut libc::c_int,
-    lifeline_write: &mut libc::c_int,
-    fd_null: &mut libc::c_int,
-) -> Result<()> {
-    // create lifeline pipe
-    let pipe_fds = pipe().context("failed to create pipe")?;
-    // TODO: return these
-    *lifeline_read = pipe_fds.0;
-    *lifeline_write = pipe_fds.1;
-
-    // populate fd_null
-    *fd_null = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(PATH_DEVNULL)
-        .with_context(|| format!("failed to open {}", PATH_DEVNULL))?
-        .into_raw_fd();
-
-    if let ForkResult::Parent { child } = unsafe { fork() }.context("failed to fork process")? {
-        // wait for the child
-        if let Err(e) = close(*lifeline_write) {
-            eprintln!("warning: failed to close lifeline in parent: {}", e);
-        }
-        let mut buf = [0; 1];
-        if let Err(e) = read(*lifeline_read, &mut buf) {
-            eprintln!("warning: failed read lifeline in parent: {}", e);
-        }
-        // exit with status depending on child status
-        match waitpid(child, Some(WaitPidFlag::WNOHANG))
-            .with_context(|| format!("failed to wait for process {}", child))?
-        {
-            WaitStatus::StillAlive => std::process::exit(0),
-            WaitStatus::Exited(_, status) => std::process::exit(status),
-            _ => return Err(anyhow!("waitpid returned unknown status")),
-        }
-    }
-    Ok(())
+struct Daemonize {
+    lifeline_read: RawFd,
+    lifeline_write: RawFd,
+    fd_null: RawFd,
 }
+impl Daemonize {
+    fn start() -> Result<Self> {
+        // create lifeline pipe
+        let (lifeline_read, lifeline_write) = pipe().context("failed to create pipe")?;
 
-fn daemonize_finish(
-    lifeline_read: &mut libc::c_int,
-    lifeline_write: &mut libc::c_int,
-    fd_null: &mut libc::c_int,
-) -> Result<()> {
-    setsid().context("failed to create session")?;
-    if let Err(e) = close(*lifeline_read) {
-        eprintln!(
-            "warning: failed to close read end of lifeline in child: {}",
-            e
-        );
-    }
-    if let Err(e) = close(*lifeline_write) {
-        eprintln!("warning: failed to cut the lifeline: {}", e);
-    }
+        // populate fd_null
+        let fd_null = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(PATH_DEVNULL)
+            .with_context(|| format!("failed to open {}", PATH_DEVNULL))?
+            .into_raw_fd();
 
-    // close all our std fds
-    if let Err(e) = dup2(*fd_null, libc::STDIN_FILENO) {
-        eprintln!("warning: failed to close stdin: {}", e);
+        if let ForkResult::Parent { child } = unsafe { fork() }.context("failed to fork process")? {
+            // wait for the child
+            if let Err(e) = close(lifeline_write) {
+                eprintln!("warning: failed to close lifeline in parent: {}", e);
+            }
+            let mut buf = [0; 1];
+            if let Err(e) = read(lifeline_read, &mut buf) {
+                eprintln!("warning: failed read lifeline in parent: {}", e);
+            }
+            // exit with status depending on child status
+            match waitpid(child, Some(WaitPidFlag::WNOHANG))
+                .with_context(|| format!("failed to wait for process {}", child))?
+            {
+                WaitStatus::StillAlive => std::process::exit(0),
+                WaitStatus::Exited(_, status) => std::process::exit(status),
+                _ => return Err(anyhow!("waitpid returned unknown status")),
+            }
+        }
+        Ok(Self {
+            lifeline_read,
+            lifeline_write,
+            fd_null,
+        })
     }
-    if let Err(e) = dup2(*fd_null, libc::STDOUT_FILENO) {
-        eprintln!("warning: failed to close stdout: {}", e);
+    fn finish(self) -> Result<()> {
+        setsid().context("failed to create session")?;
+        if let Err(e) = close(self.lifeline_read) {
+            eprintln!(
+                "warning: failed to close read end of lifeline in child: {}",
+                e
+            );
+        }
+        if let Err(e) = close(self.lifeline_write) {
+            eprintln!("warning: failed to cut the lifeline: {}", e);
+        }
+
+        // close all our std fds
+        if let Err(e) = dup2(self.fd_null, libc::STDIN_FILENO) {
+            eprintln!("warning: failed to close stdin: {}", e);
+        }
+        if let Err(e) = dup2(self.fd_null, libc::STDOUT_FILENO) {
+            eprintln!("warning: failed to close stdout: {}", e);
+        }
+        if let Err(e) = dup2(self.fd_null, libc::STDERR_FILENO) {
+            eprintln!("warning: failed to close stderr: {}", e);
+        }
+        if self.fd_null > 2 {
+            close(self.fd_null).ok();
+        }
+        Ok(())
     }
-    if let Err(e) = dup2(*fd_null, libc::STDERR_FILENO) {
-        eprintln!("warning: failed to close stderr: {}", e);
-    }
-    if *fd_null > 2 {
-        close(*fd_null).ok();
-    }
-    Ok(())
 }
 
 const BASE64_TABLE: &[char] = &[
