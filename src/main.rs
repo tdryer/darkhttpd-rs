@@ -107,9 +107,6 @@ macro_rules! abort {
     })
 }
 
-const INVALID_UID: libc::uid_t = libc::uid_t::MAX;
-const INVALID_GID: libc::gid_t = libc::gid_t::MAX;
-
 fn main() -> Result<()> {
     let mut server = Server::new();
 
@@ -157,16 +154,14 @@ fn main() -> Result<()> {
         server.wwwroot.clear();
     }
 
-    if server.drop_gid != INVALID_GID {
-        let gid = Gid::from_raw(server.drop_gid);
+    if let Some(gid) = server.drop_gid {
         setgroups(&[gid])
             .with_context(|| format!("failed to set supplementary group IDs to [{}]", gid))?;
         setgid(gid).with_context(|| format!("failed to set group ID to {}", gid))?;
         println!("set gid to {}", gid);
     }
 
-    if server.drop_uid != INVALID_UID {
-        let uid = Uid::from_raw(server.drop_uid);
+    if let Some(uid) = server.drop_uid {
         setuid(uid).with_context(|| format!("failed to set user ID to {}", uid))?;
         println!("set uid to {}", uid);
     }
@@ -269,8 +264,8 @@ struct Server {
     total_out: u64,
     accepting: bool,
     mime_map: MimeMap,
-    drop_uid: libc::uid_t,
-    drop_gid: libc::gid_t,
+    drop_uid: Option<Uid>,
+    drop_gid: Option<Gid>,
 }
 impl Server {
     fn new() -> Self {
@@ -301,8 +296,8 @@ impl Server {
             total_out: 0,
             accepting: true,
             mime_map: MimeMap::parse_default_extension_map(),
-            drop_uid: INVALID_UID,
-            drop_gid: INVALID_GID,
+            drop_uid: None,
+            drop_gid: None,
         }
     }
     fn keep_alive_header(&self, conn_close: bool) -> String {
@@ -401,11 +396,10 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
                     .and_then(|uid| User::from_uid(Uid::from_raw(uid)).transpose())
                     .transpose()
                     .context("getpwuid failed")?;
-                server.drop_uid = user1
+                let user = user1
                     .or(user2)
-                    .with_context(|| format!("no such uid: `{}'", uid))?
-                    .uid
-                    .as_raw();
+                    .with_context(|| format!("no such uid: `{}'", uid))?;
+                server.drop_uid = Some(user.uid)
             }
             "--gid" => {
                 let gid = args.next().context("missing gid after --gid")?;
@@ -416,11 +410,10 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
                     .and_then(|gid| Group::from_gid(Gid::from_raw(gid)).transpose())
                     .transpose()
                     .context("getgrgid failed")?;
-                server.drop_gid = group1
+                let group = group1
                     .or(group2)
-                    .with_context(|| format!("no such gid: `{}'", gid))?
-                    .gid
-                    .as_raw();
+                    .with_context(|| format!("no such gid: `{}'", gid))?;
+                server.drop_gid = Some(group.gid)
             }
             "--pidfile" => {
                 server.pidfile_name =
