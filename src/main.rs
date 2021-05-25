@@ -608,7 +608,7 @@ impl<'a> std::fmt::Display for Base64Encoded<'a> {
 
 // TODO: Oxidize types
 struct Connection {
-    socket: Option<TcpStream>,
+    socket: TcpStream,
     client: IpAddr,
     last_active: libc::time_t,
     state: ConnectionState,
@@ -1521,14 +1521,10 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
         let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
         let buf = &conn.reply.as_ref().unwrap().as_bytes()
             [start..start + usize::try_from(send_len).unwrap()];
-        sent = socket::send(
-            conn.socket.as_ref().unwrap().as_raw_fd(),
-            buf,
-            socket::MsgFlags::empty(),
-        );
+        sent = socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty());
     } else {
         sent = send_from_file(
-            conn.socket.as_ref().unwrap().as_raw_fd(),
+            conn.socket.as_raw_fd(),
             conn.reply_fd.as_ref().unwrap().as_raw_fd(),
             conn.reply_start + conn.reply_sent,
             send_len.try_into().unwrap(),
@@ -1567,7 +1563,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
     conn.last_active = server.now;
 
     let sent = match socket::send(
-        conn.socket.as_ref().unwrap().as_raw_fd(),
+        conn.socket.as_raw_fd(),
         &header[conn.header_sent..header.len() - conn.header_sent],
         socket::MsgFlags::empty(),
     ) {
@@ -1611,11 +1607,7 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection) {
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
     let recvd = u64::try_from(
-        match socket::recv(
-            conn.socket.as_ref().unwrap().as_raw_fd(),
-            &mut buf,
-            socket::MsgFlags::empty(),
-        ) {
+        match socket::recv(conn.socket.as_raw_fd(), &mut buf, socket::MsgFlags::empty()) {
             Ok(recvd) if recvd > 0 => recvd,
             Err(nix::Error::Sys(Errno::EAGAIN)) => {
                 // would block
@@ -1745,7 +1737,7 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
 /// Allocate and initialize an empty connection.
 fn new_connection(server: &Server, stream: TcpStream, client: IpAddr) -> Connection {
     Connection {
-        socket: Some(stream),
+        socket: stream,
         client,
         last_active: server.now,
         state: ConnectionState::ReceiveRequest,
@@ -1838,11 +1830,11 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
         match conn.state {
             ConnectionState::Done => {}
             ConnectionState::ReceiveRequest => {
-                recv_set.insert(conn.socket.as_ref().unwrap().as_raw_fd());
+                recv_set.insert(conn.socket.as_raw_fd());
                 timeout_required = true;
             }
             ConnectionState::SendHeader | ConnectionState::SendReply => {
-                send_set.insert(conn.socket.as_ref().unwrap().as_raw_fd());
+                send_set.insert(conn.socket.as_raw_fd());
                 timeout_required = true;
             }
         }
@@ -1891,17 +1883,17 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
 
         match conn.state {
             ConnectionState::ReceiveRequest => {
-                if recv_set.contains(conn.socket.as_ref().unwrap().as_raw_fd()) {
+                if recv_set.contains(conn.socket.as_raw_fd()) {
                     poll_recv_request(server, conn);
                 }
             }
             ConnectionState::SendHeader => {
-                if send_set.contains(conn.socket.as_ref().unwrap().as_raw_fd()) {
+                if send_set.contains(conn.socket.as_raw_fd()) {
                     poll_send_header(server, conn);
                 }
             }
             ConnectionState::SendReply => {
-                if send_set.contains(conn.socket.as_ref().unwrap().as_raw_fd()) {
+                if send_set.contains(conn.socket.as_raw_fd()) {
                     poll_send_reply(server, conn);
                 }
             }
