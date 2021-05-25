@@ -380,7 +380,7 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
                 let filename = args.next().context("missing filename after --mimetypes")?;
                 server
                     .mime_map
-                    .parse_extension_map_file(&OsString::from(filename));
+                    .parse_extension_map_file(&OsString::from(filename))?;
             }
             "--default-mimetype" => {
                 server.mime_map.default_mimetype = args
@@ -707,14 +707,15 @@ impl MimeMap {
     }
 
     /// Add extension map from a file.
-    fn parse_extension_map_file(&mut self, filename: &OsStr) {
+    fn parse_extension_map_file(&mut self, filename: &OsStr) -> Result<()> {
         let file = File::open(filename)
-            .unwrap_or_else(|e| abort!("failed to open {}: {}", filename.to_string_lossy(), e));
+            .with_context(|| format!("failed to open {}", filename.to_string_lossy()))?;
         for line in std::io::BufReader::new(file).lines() {
-            let line = line
-                .unwrap_or_else(|e| abort!("failed to read {}: {}", filename.to_string_lossy(), e));
+            let line =
+                line.with_context(|| format!("failed to read {}", filename.to_string_lossy()))?;
             self.add_mimetype_line(&line);
         }
+        Ok(())
     }
 
     /// Add line from an extension map.
