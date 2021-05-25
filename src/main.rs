@@ -627,10 +627,8 @@ struct Connection {
     referer: Option<String>,
     user_agent: Option<String>,
     authorization: Option<String>,
-    range_begin: libc::off_t,
-    range_end: libc::off_t,
-    range_begin_given: libc::off_t,
-    range_end_given: libc::off_t,
+    range_begin: Option<libc::off_t>,
+    range_end: Option<libc::off_t>,
     header: Option<String>,
     header_sent: usize,
     header_only: bool,
@@ -975,10 +973,7 @@ fn parse_range_field(conn: &mut Connection) {
     }
     let remaining = &remaining[1..];
 
-    if let Some(range_begin) = range_begin {
-        conn.range_begin_given = 1;
-        conn.range_begin = range_begin;
-    }
+    conn.range_begin = range_begin;
 
     // parse number after hyphen
     let (range_end, remaining) = parse_offset(remaining);
@@ -988,10 +983,7 @@ fn parse_range_field(conn: &mut Connection) {
         return;
     }
 
-    if let Some(range_end) = range_end {
-        conn.range_end_given = 1;
-        conn.range_end = range_end;
-    }
+    conn.range_end = range_end;
 }
 
 fn parse_offset(data: &[u8]) -> (Option<libc::off_t>, &[u8]) {
@@ -1226,26 +1218,26 @@ fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&
 
 /// Return range based on header values and file length.
 fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
-    if conn.range_begin_given > 0 || conn.range_end_given > 0 {
+    if conn.range_begin.is_some() || conn.range_end.is_some() {
         let mut to;
         let mut from;
-        if conn.range_begin_given > 0 && conn.range_end_given > 0 {
+        if conn.range_begin.is_some() && conn.range_end.is_some() {
             // 100-200
-            from = conn.range_begin;
-            to = conn.range_end;
+            from = conn.range_begin.unwrap();
+            to = conn.range_end.unwrap();
 
             // clamp end to filestat.st_size-1
             if to > file_len {
                 to = file_len - 1;
             }
-        } else if conn.range_begin_given > 0 && conn.range_end_given == 0 {
+        } else if conn.range_begin.is_some() && conn.range_end.is_none() {
             // 100- :: yields 100 to end
-            from = conn.range_begin;
+            from = conn.range_begin.unwrap();
             to = file_len - 1;
-        } else if conn.range_begin_given == 0 && conn.range_end_given > 0 {
+        } else if conn.range_begin.is_none() && conn.range_end.is_some() {
             // -200 :: yields last 200
             to = file_len - 1;
-            from = to - conn.range_end + 1;
+            from = to - conn.range_end.unwrap() + 1;
 
             // clamp start
             if from < 0 {
@@ -1765,10 +1757,8 @@ fn recycle_connection(server: &mut Server, conn: &mut Connection) {
     conn.referer = None;
     conn.user_agent = None;
     conn.authorization = None;
-    conn.range_begin = 0;
-    conn.range_end = 0;
-    conn.range_begin_given = 0;
-    conn.range_end_given = 0;
+    conn.range_begin = None;
+    conn.range_end = None;
     conn.header = None;
     conn.header_sent = 0;
     conn.header_only = false;
@@ -1797,10 +1787,8 @@ fn new_connection(server: &Server, stream: TcpStream, client: IpAddr) -> Connect
         referer: None,
         user_agent: None,
         authorization: None,
-        range_begin: 0,
-        range_end: 0,
-        range_begin_given: 0,
-        range_end_given: 0,
+        range_begin: None,
+        range_end: None,
         header: None,
         header_sent: 0,
         header_only: false,
