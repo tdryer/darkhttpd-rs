@@ -129,7 +129,7 @@ fn main() -> Result<()> {
         );
     }
 
-    init_sockin(&mut server);
+    init_sockin(&mut server)?;
 
     let daemonize = server
         .want_daemon
@@ -1995,55 +1995,36 @@ fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> 
 }
 
 /// Initialize the sockin global. This is the socket that we accept connections from.
-fn init_sockin(server: &mut Server) {
-    let domain = match server.inet6 {
-        false => socket::AddressFamily::Inet,
-        true => socket::AddressFamily::Inet6,
-    };
-
-    server.sockin = match socket::socket(
-        domain,
+fn init_sockin(server: &mut Server) -> Result<()> {
+    server.sockin = socket::socket(
+        match server.inet6 {
+            false => socket::AddressFamily::Inet,
+            true => socket::AddressFamily::Inet6,
+        },
         socket::SockType::Stream,
         socket::SockFlag::empty(),
         socket::SockProtocol::Tcp,
-    ) {
-        Ok(sockin) => sockin,
-        Err(e) => abort!(
-            "failed to create listening socket: {}",
-            e.as_errno().unwrap().desc()
-        ),
-    };
+    )
+    .context("failed to create listening socket")?;
 
     // reuse address
-    if let Err(e) = socket::setsockopt(server.sockin, socket::sockopt::ReuseAddr, &true) {
-        abort!(
-            "failed to set SO_REUSEADDR: {}",
-            e.as_errno().unwrap().desc()
-        );
-    }
+    socket::setsockopt(server.sockin, socket::sockopt::ReuseAddr, &true)
+        .context("failed to set SO_REUSEADDR")?;
 
-    let socket_addr = match listening_socket_addr(server) {
-        Ok(socket_addr) => socket_addr,
-        Err(_) => abort!("malformed --addr argument"),
-    };
-
-    if let Err(e) = socket::bind(
+    let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
+    socket::bind(
         server.sockin,
         &socket::SockAddr::Inet(socket::InetAddr::from_std(&socket_addr)),
-    ) {
-        abort!(
-            "failed to bind port {}: {}",
-            server.bindport,
-            e.as_errno().unwrap().desc()
-        );
-    }
-
+    )
+    .with_context(|| format!("failed to bind port {}", server.bindport))?;
     println!("listening on: http://{}/", socket_addr);
 
     // listen on socket
-    if let Err(e) = socket::listen(server.sockin, server.max_connections as usize) {
-        abort!("failed to listen socket: {}", e.as_errno().unwrap().desc());
-    }
+    // TODO: Is max_connections the wrong type?
+    socket::listen(server.sockin, server.max_connections as usize)
+        .context("failed to listen socket")?;
+
+    Ok(())
 }
 
 #[cfg(test)]
