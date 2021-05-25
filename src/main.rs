@@ -248,7 +248,7 @@ struct Server {
     timeout_secs: libc::c_int,
     bindaddr: Option<String>,
     bindport: u16,
-    max_connections: libc::c_int,
+    max_connections: usize,
     index_name: String,
     no_listing: bool,
     sockin: libc::c_int,
@@ -279,8 +279,8 @@ impl Server {
             forward_all_url: None,
             timeout_secs: 30,
             bindaddr: None,
-            bindport: 8080,      /* or 80 if running as root */
-            max_connections: -1, /* kern.ipc.somaxconn */
+            bindport: 8080, /* or 80 if running as root */
+            max_connections: usize::MAX,
             index_name: DEFAULT_INDEX_NAME.to_string(),
             no_listing: false,
             sockin: -1,
@@ -2020,9 +2020,8 @@ fn init_sockin(server: &mut Server) -> Result<()> {
     println!("listening on: http://{}/", socket_addr);
 
     // listen on socket
-    // TODO: Is max_connections the wrong type?
-    socket::listen(server.sockin, server.max_connections as usize)
-        .context("failed to listen socket")?;
+    socket::listen(server.sockin, server.max_connections)
+        .context("failed to listen for connections")?;
 
     Ok(())
 }
