@@ -98,15 +98,6 @@ fn usage(server: &Server, argv0: &str) {
     );
 }
 
-/// Prints message to standard error and exits with code 1.
-macro_rules! abort {
-    ($($arg:tt)*) => ({
-        eprint!("{}: ", env!("CARGO_PKG_NAME"));
-        eprintln!($($arg)*);
-        std::process::exit(1);
-    })
-}
-
 fn main() -> Result<()> {
     let mut server = Server::new();
 
@@ -1218,37 +1209,14 @@ fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&
 
 /// Return range based on header values and file length.
 fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
-    if conn.range_begin.is_some() || conn.range_end.is_some() {
-        let mut to;
-        let mut from;
-        if conn.range_begin.is_some() && conn.range_end.is_some() {
-            // 100-200
-            from = conn.range_begin.unwrap();
-            to = conn.range_end.unwrap();
-
-            // clamp end to filestat.st_size-1
-            if to > file_len {
-                to = file_len - 1;
-            }
-        } else if conn.range_begin.is_some() && conn.range_end.is_none() {
-            // 100- :: yields 100 to end
-            from = conn.range_begin.unwrap();
-            to = file_len - 1;
-        } else if conn.range_begin.is_none() && conn.range_end.is_some() {
-            // -200 :: yields last 200
-            to = file_len - 1;
-            from = to - conn.range_end.unwrap() + 1;
-
-            // clamp start
-            if from < 0 {
-                from = 0;
-            }
-        } else {
-            abort!("internal error - from/to mismatch");
-        }
-        Some((to, from))
-    } else {
-        None
+    match (conn.range_begin, conn.range_end) {
+        // eg. 100-200
+        (Some(from), Some(to)) => Some((from, min(to, file_len - 1))),
+        // eg. 100- :: yields 100 to end
+        (Some(from), None) => Some((from, file_len - 1)),
+        // eg. -200 :: yields last 200
+        (None, Some(to)) => Some((max(file_len - to, 0), file_len - 1)),
+        (None, None) => None,
     }
 }
 
@@ -1372,7 +1340,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
     }
 
     // handle Range
-    if let Some((to, from)) = get_range(&conn, metadata.len() as i64) {
+    if let Some((from, to)) = get_range(&conn, metadata.len() as i64) {
         if from >= metadata.len() as i64 {
             let errname = "Requested Range Not Satisfiable";
             let reason = format!("You requested a range outside of the file.");
