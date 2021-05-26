@@ -633,6 +633,63 @@ struct Connection {
     reply_sent: libc::off_t,
     total_sent: libc::off_t,
 }
+impl Connection {
+    /// Allocate and initialize an empty connection.
+    fn new(now: libc::time_t, stream: TcpStream, client: IpAddr) -> Self {
+        Self {
+            socket: stream,
+            client,
+            last_active: now,
+            state: ConnectionState::ReceiveRequest,
+            request: Vec::new(),
+            method: None,
+            url: None,
+            referer: None,
+            user_agent: None,
+            authorization: None,
+            range_begin: None,
+            range_end: None,
+            header: None,
+            header_sent: 0,
+            header_only: false,
+            http_code: 0,
+            conn_close: true,
+            reply_type: ConnectionReplyType::Generated,
+            reply: None,
+            reply_fd: None,
+            reply_start: 0,
+            reply_length: 0,
+            reply_sent: 0,
+            total_sent: 0,
+        }
+    }
+
+    /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
+    fn recycle(&mut self) {
+        // don't reset conn.client
+        self.request = Vec::new();
+        self.method = None;
+        self.url = None;
+        self.referer = None;
+        self.user_agent = None;
+        self.authorization = None;
+        self.range_begin = None;
+        self.range_end = None;
+        self.header = None;
+        self.header_sent = 0;
+        self.header_only = false;
+        self.http_code = 0;
+        self.conn_close = true;
+        self.reply = None;
+        self.reply_fd = None;
+        self.reply_start = 0;
+        self.reply_length = 0;
+        self.reply_sent = 0;
+        self.total_sent = 0;
+
+        self.state = ConnectionState::ReceiveRequest; // ready for another
+    }
+}
 
 #[derive(Debug, PartialEq)]
 enum ConnectionState {
@@ -1706,64 +1763,6 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     server.accepting = true; // Try to resume accepting if we ran out of sockets.
 }
 
-/// Recycle a finished connection for HTTP/1.1 Keep-Alive.
-fn recycle_connection(server: &mut Server, conn: &mut Connection) {
-    free_connection(server, conn);
-
-    // don't reset conn.socket or conn.client
-    conn.request = Vec::new();
-    conn.method = None;
-    conn.url = None;
-    conn.referer = None;
-    conn.user_agent = None;
-    conn.authorization = None;
-    conn.range_begin = None;
-    conn.range_end = None;
-    conn.header = None;
-    conn.header_sent = 0;
-    conn.header_only = false;
-    conn.http_code = 0;
-    conn.conn_close = true;
-    conn.reply = None;
-    conn.reply_fd = None;
-    conn.reply_start = 0;
-    conn.reply_length = 0;
-    conn.reply_sent = 0;
-    conn.total_sent = 0;
-
-    conn.state = ConnectionState::ReceiveRequest; // ready for another
-}
-
-/// Allocate and initialize an empty connection.
-fn new_connection(server: &Server, stream: TcpStream, client: IpAddr) -> Connection {
-    Connection {
-        socket: stream,
-        client,
-        last_active: server.now,
-        state: ConnectionState::ReceiveRequest,
-        request: Vec::new(),
-        method: None,
-        url: None,
-        referer: None,
-        user_agent: None,
-        authorization: None,
-        range_begin: None,
-        range_end: None,
-        header: None,
-        header_sent: 0,
-        header_only: false,
-        http_code: 0,
-        conn_close: true,
-        reply_type: ConnectionReplyType::Generated,
-        reply: None,
-        reply_fd: None,
-        reply_start: 0,
-        reply_length: 0,
-        reply_sent: 0,
-        total_sent: 0,
-    }
-}
-
 /// If a connection has been idle for more than timeout_secs, it will be marked as DONE and killed
 /// off in httpd_poll().
 fn poll_check_timeout(server: &Server, conn: &mut Connection) {
@@ -1806,7 +1805,7 @@ fn accept_connection(server: &mut Server, connections: &mut Vec<Connection>) {
         .expect("set_nonblocking failed");
 
     // Allocate and initialize struct connection.
-    let conn = new_connection(server, stream, addr.ip().to_std());
+    let conn = Connection::new(server.now, stream, addr.ip().to_std());
 
     connections.push(conn);
     let num_connections = connections.len();
@@ -1909,7 +1908,8 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
                 free_connection(server, conn);
                 connections.remove(index);
             } else {
-                recycle_connection(server, conn);
+                free_connection(server, conn);
+                conn.recycle();
                 // and go right back to recv_request without going through select() again.
                 poll_recv_request(server, conn);
                 index += 1;
