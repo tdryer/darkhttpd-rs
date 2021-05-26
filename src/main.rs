@@ -458,7 +458,7 @@ impl PidFile {
         // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
         let mut pidfile_file = OpenOptions::new()
             .write(true)
-            .custom_flags(libc::O_CREAT | libc::O_EXCL)
+            .create_new(true)
             .mode(PIDFILE_MODE)
             .open(&pidfile_name)
             .map_err(|e| {
