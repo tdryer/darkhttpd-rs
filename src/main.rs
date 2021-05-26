@@ -625,9 +625,7 @@ struct Connection {
     header_only: bool,
     http_code: u16,
     conn_close: bool,
-    reply_type: ConnectionReplyType,
-    reply: Option<String>,
-    reply_fd: Option<File>,
+    reply_type: Option<ConnectionReplyType>,
     reply_start: libc::off_t,
     reply_length: libc::off_t,
     reply_sent: libc::off_t,
@@ -654,9 +652,7 @@ impl Connection {
             header_only: false,
             http_code: 0,
             conn_close: true,
-            reply_type: ConnectionReplyType::Generated,
-            reply: None,
-            reply_fd: None,
+            reply_type: None,
             reply_start: 0,
             reply_length: 0,
             reply_sent: 0,
@@ -680,8 +676,7 @@ impl Connection {
         self.header_only = false;
         self.http_code = 0;
         self.conn_close = true;
-        self.reply = None;
-        self.reply_fd = None;
+        self.reply_type = None;
         self.reply_start = 0;
         self.reply_length = 0;
         self.reply_sent = 0;
@@ -699,10 +694,10 @@ enum ConnectionState {
     Done,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 enum ConnectionReplyType {
-    Generated,
-    FromFile,
+    Generated(String),
+    FromFile(File),
 }
 
 type ForwardMap = HashMap<String, String>;
@@ -1068,7 +1063,7 @@ fn default_reply(
         GeneratedOn(server),
     );
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = Some(reply);
+    conn.reply_type = Some(ConnectionReplyType::Generated(reply));
 
     let headers = format!(
         "HTTP/1.1 {} {}\r\n\
@@ -1093,7 +1088,6 @@ fn default_reply(
         }
     );
     conn.header = Some(headers);
-    conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = errcode;
     conn.reply_start = 0; // Reset in case the request set a range.
 }
@@ -1112,7 +1106,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         GeneratedOn(server),
     );
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = Some(reply);
+    conn.reply_type = Some(ConnectionReplyType::Generated(reply));
 
     let headers = format!(
         "HTTP/1.1 301 Moved Permanently\r\n\
@@ -1130,7 +1124,6 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         conn.reply_length,
     );
     conn.header = Some(headers);
-    conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = 301;
 }
 
@@ -1205,7 +1198,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         GeneratedOn(server),
     );
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply = Some(reply);
+    conn.reply_type = Some(ConnectionReplyType::Generated(reply));
 
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -1222,7 +1215,6 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         conn.reply_length,
     );
     conn.header = Some(headers);
-    conn.reply_type = ConnectionReplyType::Generated;
     conn.http_code = 200;
 }
 
@@ -1379,8 +1371,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         return;
     }
 
-    conn.reply_fd = Some(file);
-    conn.reply_type = ConnectionReplyType::FromFile;
+    conn.reply_type = Some(ConnectionReplyType::FromFile(file));
     let lastmod = metadata
         .modified()
         .unwrap()
@@ -1572,21 +1563,19 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     // TODO: off_t can be wider than size_t?
     let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
 
-    let sent;
-    if conn.reply_type == ConnectionReplyType::Generated {
-        assert!(conn.reply.is_some());
-        let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
-        let buf = &conn.reply.as_ref().unwrap().as_bytes()
-            [start..start + usize::try_from(send_len).unwrap()];
-        sent = socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty());
-    } else {
-        sent = send_from_file(
+    let sent = match conn.reply_type.as_ref().unwrap() {
+        ConnectionReplyType::Generated(reply) => {
+            let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
+            let buf = &reply.as_bytes()[start..start + usize::try_from(send_len).unwrap()];
+            socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty())
+        }
+        ConnectionReplyType::FromFile(file) => send_from_file(
             conn.socket.as_raw_fd(),
-            conn.reply_fd.as_ref().unwrap().as_raw_fd(),
+            file.as_raw_fd(),
             conn.reply_start + conn.reply_sent,
             send_len.try_into().unwrap(),
-        );
-    }
+        ),
+    };
     conn.last_active = server.now;
     let sent = match sent {
         Ok(sent) if sent > 0 => sent,
