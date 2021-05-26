@@ -625,7 +625,7 @@ struct Connection {
     header_only: bool,
     http_code: u16,
     conn_close: bool,
-    reply_type: Option<ConnectionReplyType>,
+    body: Option<Body>,
     reply_start: libc::off_t,
     reply_length: libc::off_t,
     reply_sent: libc::off_t,
@@ -652,7 +652,7 @@ impl Connection {
             header_only: false,
             http_code: 0,
             conn_close: true,
-            reply_type: None,
+            body: None,
             reply_start: 0,
             reply_length: 0,
             reply_sent: 0,
@@ -676,7 +676,7 @@ impl Connection {
         self.header_only = false;
         self.http_code = 0;
         self.conn_close = true;
-        self.reply_type = None;
+        self.body = None;
         self.reply_start = 0;
         self.reply_length = 0;
         self.reply_sent = 0;
@@ -695,7 +695,7 @@ enum ConnectionState {
 }
 
 #[derive(Debug)]
-enum ConnectionReplyType {
+enum Body {
     Generated(String),
     FromFile(File),
 }
@@ -1063,7 +1063,7 @@ fn default_reply(
         GeneratedOn(server),
     );
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply_type = Some(ConnectionReplyType::Generated(reply));
+    conn.body = Some(Body::Generated(reply));
 
     let headers = format!(
         "HTTP/1.1 {} {}\r\n\
@@ -1106,7 +1106,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         GeneratedOn(server),
     );
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply_type = Some(ConnectionReplyType::Generated(reply));
+    conn.body = Some(Body::Generated(reply));
 
     let headers = format!(
         "HTTP/1.1 301 Moved Permanently\r\n\
@@ -1198,7 +1198,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         GeneratedOn(server),
     );
     conn.reply_length = reply.as_bytes().len() as libc::off_t;
-    conn.reply_type = Some(ConnectionReplyType::Generated(reply));
+    conn.body = Some(Body::Generated(reply));
 
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -1371,7 +1371,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
         return;
     }
 
-    conn.reply_type = Some(ConnectionReplyType::FromFile(file));
+    conn.body = Some(Body::FromFile(file));
     let lastmod = metadata
         .modified()
         .unwrap()
@@ -1563,13 +1563,13 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     // TODO: off_t can be wider than size_t?
     let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
 
-    let sent = match conn.reply_type.as_ref().unwrap() {
-        ConnectionReplyType::Generated(reply) => {
+    let sent = match conn.body.as_ref().unwrap() {
+        Body::Generated(reply) => {
             let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
             let buf = &reply.as_bytes()[start..start + usize::try_from(send_len).unwrap()];
             socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty())
         }
-        ConnectionReplyType::FromFile(file) => send_from_file(
+        Body::FromFile(file) => send_from_file(
             conn.socket.as_raw_fd(),
             file.as_raw_fd(),
             conn.reply_start + conn.reply_sent,
