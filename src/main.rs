@@ -622,7 +622,6 @@ struct Connection {
     range_end: Option<libc::off_t>,
     header: Option<String>,
     header_sent: usize,
-    header_only: bool,
     http_code: u16,
     conn_close: bool,
     body: Option<Body>,
@@ -649,7 +648,6 @@ impl Connection {
             range_end: None,
             header: None,
             header_sent: 0,
-            header_only: false,
             http_code: 0,
             conn_close: true,
             body: None,
@@ -673,7 +671,6 @@ impl Connection {
         self.range_end = None;
         self.header = None;
         self.header_sent = 0;
-        self.header_only = false;
         self.http_code = 0;
         self.conn_close = true;
         self.body = None;
@@ -1241,7 +1238,6 @@ fn not_modified(server: &Server, conn: &mut Connection) {
     );
     conn.header = Some(headers);
     conn.http_code = 304;
-    conn.header_only = true;
     conn.reply_length = 0;
 }
 
@@ -1526,7 +1522,7 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
         process_get(server, conn);
     } else if conn.method.as_deref().unwrap() == "HEAD" {
         process_get(server, conn);
-        conn.header_only = true;
+        conn.body = None;
     } else {
         let reason = "The method you specified is not implemented.";
         default_reply(server, conn, 501, "Not Implemented", reason);
@@ -1557,13 +1553,12 @@ fn send_from_file(
 /// Sending reply.
 fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     assert!(conn.state == ConnectionState::SendReply);
-    assert!(!conn.header_only);
     assert!(conn.reply_length >= conn.reply_sent);
 
     // TODO: off_t can be wider than size_t?
     let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
 
-    let sent = match conn.body.as_ref().unwrap() {
+    let sent = match conn.body.as_ref().expect("reply has no body") {
         Body::Generated(reply) => {
             let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
             let buf = &reply.as_bytes()[start..start + usize::try_from(send_len).unwrap()];
@@ -1633,7 +1628,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
 
     // check if we're done sending header
     if conn.header_sent == header.len() {
-        if conn.header_only {
+        if conn.body.is_none() {
             conn.state = ConnectionState::Done;
         } else {
             conn.state = ConnectionState::SendReply;
