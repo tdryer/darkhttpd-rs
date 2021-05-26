@@ -2007,6 +2007,14 @@ mod test {
     }
 
     #[test]
+    fn http_date_works() {
+        assert_eq!(
+            HttpDate(1622040683).to_string(),
+            "Wed, 26 May 2021 14:51:23 GMT"
+        );
+    }
+
+    #[test]
     fn make_safe_url_works() {
         let test_cases = &[
             ("", None),

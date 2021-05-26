@@ -5,10 +5,14 @@ authors = ["Tom Dryer <tomdryer.com@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-libc = "0.2"
-chrono = "0.4.19"
-nix = "0.20.0"
 anyhow = "1.0.40"
+libc = "0.2"
+nix = "0.20.0"
+
+[dependencies.chrono]
+version = "0.4.19"
+default-features = false
+features = ["std", "clock"]
 
 [dev-dependencies]
 tempfile = "3"
