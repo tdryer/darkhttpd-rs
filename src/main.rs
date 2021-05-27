@@ -30,6 +30,7 @@ use nix::unistd::{
 const COPYRIGHT: &str = "copyright (c) 2021 Tom Dryer";
 const DEFAULT_INDEX_NAME: &str = "index.html";
 const PATH_DEVNULL: &str = "/dev/null";
+const SENDFILE_SIZE_LIMIT: usize = 1 << 20;
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -1535,19 +1536,22 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     conn.request = Vec::new();
 }
 
-/// Send chunk on socket <s> from FILE *fp, starting at <ofs> and of size <size>.  Use sendfile()
-/// if possible since it's zero-copy on some platforms. Returns the number of bytes sent, 0 on
-/// closure, -1 if send() failed, -2 if read error.
+/// Send chunk on `stream` from `file`, starting at `offset` and of length `size`. Returns the
+/// number of bytes sent.
 fn send_from_file(
-    s: libc::c_int,
-    fd: libc::c_int,
-    mut ofs: libc::off_t,
-    size: libc::size_t,
+    stream: &mut TcpStream,
+    file: &mut File,
+    mut offset: libc::off_t,
+    size: usize,
 ) -> nix::Result<usize> {
-    // Limit truly ridiculous (LARGEFILE) requests.
-    let size = min(size, 1 << 20);
-    // TODO: Implement fallback for platforms without sendfile.
-    sendfile(s, fd, Some(&mut ofs), size)
+    // Limit the size of the data sent per sendfile call.
+    let size = min(size, SENDFILE_SIZE_LIMIT);
+    sendfile(
+        stream.as_raw_fd(),
+        file.as_raw_fd(),
+        Some(&mut offset),
+        size,
+    )
 }
 
 /// Sending reply.
@@ -1558,15 +1562,15 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     // TODO: off_t can be wider than size_t?
     let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
 
-    let sent = match conn.body.as_ref().expect("reply has no body") {
+    let sent = match conn.body.as_mut().expect("reply has no body") {
         Body::Generated(reply) => {
             let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
             let buf = &reply.as_bytes()[start..start + usize::try_from(send_len).unwrap()];
             socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty())
         }
         Body::FromFile(file) => send_from_file(
-            conn.socket.as_raw_fd(),
-            file.as_raw_fd(),
+            &mut conn.socket,
+            file,
             conn.reply_start + conn.reply_sent,
             send_len.try_into().unwrap(),
         ),
