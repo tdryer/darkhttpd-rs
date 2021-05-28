@@ -1544,7 +1544,7 @@ fn send_from_file(
     mut offset: libc::off_t,
     size: usize,
 ) -> nix::Result<usize> {
-    // Limit the size of the data sent per sendfile call.
+    // Limit the size of the data sent per `sendfile` call.
     let size = min(size, SENDFILE_SIZE_LIMIT);
     sendfile(
         stream.as_raw_fd(),
@@ -1559,21 +1559,18 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     assert!(conn.state == ConnectionState::SendReply);
     assert!(conn.reply_length >= conn.reply_sent);
 
-    // TODO: off_t can be wider than size_t?
-    let send_len: libc::off_t = conn.reply_length - conn.reply_sent;
+    let offset = conn.reply_start + conn.reply_sent;
+    // `libc::off_t` may wider than `usize`, so saturate when casting.
+    let send_len = usize::try_from(conn.reply_length - conn.reply_sent).unwrap_or(usize::MAX);
 
     let sent = match conn.body.as_mut().expect("reply has no body") {
         Body::Generated(reply) => {
-            let start = usize::try_from(conn.reply_start + conn.reply_sent).unwrap();
-            let buf = &reply.as_bytes()[start..start + usize::try_from(send_len).unwrap()];
+            // It's not possible for a generated body to be larger than `usize`.
+            let offset = usize::try_from(offset).unwrap();
+            let buf = &reply.as_bytes()[offset..offset + send_len];
             socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty())
         }
-        Body::FromFile(file) => send_from_file(
-            &mut conn.socket,
-            file,
-            conn.reply_start + conn.reply_sent,
-            send_len.try_into().unwrap(),
-        ),
+        Body::FromFile(file) => send_from_file(&mut conn.socket, file, offset, send_len),
     };
     conn.last_active = server.now;
     let sent = match sent {
