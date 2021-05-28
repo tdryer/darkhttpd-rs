@@ -18,7 +18,6 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Local, Utc};
 use nix::errno::Errno;
 use nix::sys::select::{select, FdSet};
-use nix::sys::sendfile::sendfile;
 use nix::sys::signal::{signal, SigHandler, Signal};
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
@@ -632,17 +631,17 @@ struct Connection {
     referer: Option<String>,
     user_agent: Option<String>,
     authorization: Option<String>,
-    range_begin: Option<libc::off_t>,
-    range_end: Option<libc::off_t>,
+    range_begin: Option<i64>,
+    range_end: Option<i64>,
     header: Option<String>,
     header_sent: usize,
     http_code: u16,
     conn_close: bool,
     body: Option<Body>,
-    reply_start: libc::off_t,
-    reply_length: libc::off_t,
-    reply_sent: libc::off_t,
-    total_sent: libc::off_t,
+    reply_start: i64,
+    reply_length: i64,
+    reply_sent: i64,
+    total_sent: i64,
 }
 impl Connection {
     /// Allocate and initialize an empty connection.
@@ -1040,7 +1039,7 @@ fn parse_range_field(conn: &mut Connection) {
     conn.range_end = range_end;
 }
 
-fn parse_offset(data: &[u8]) -> (Option<libc::off_t>, &[u8]) {
+fn parse_offset(data: &[u8]) -> (Option<i64>, &[u8]) {
     let mut digits_len = 0;
     while digits_len < data.len() && data[digits_len].is_ascii_digit() {
         digits_len += 1;
@@ -1073,7 +1072,7 @@ fn default_reply(
         reason,
         GeneratedOn(server),
     );
-    conn.reply_length = reply.as_bytes().len() as libc::off_t;
+    conn.reply_length = reply.as_bytes().len() as i64;
     conn.body = Some(Body::Generated(reply));
 
     let headers = format!(
@@ -1116,7 +1115,7 @@ fn redirect(server: &Server, conn: &mut Connection, location: &str) {
         location,
         GeneratedOn(server),
     );
-    conn.reply_length = reply.as_bytes().len() as libc::off_t;
+    conn.reply_length = reply.as_bytes().len() as i64;
     conn.body = Some(Body::Generated(reply));
 
     let headers = format!(
@@ -1208,7 +1207,7 @@ fn generate_dir_listing(server: &Server, conn: &mut Connection, path: &str, deco
         Listing(entries),
         GeneratedOn(server),
     );
-    conn.reply_length = reply.as_bytes().len() as libc::off_t;
+    conn.reply_length = reply.as_bytes().len() as i64;
     conn.body = Some(Body::Generated(reply));
 
     let headers = format!(
@@ -1546,22 +1545,18 @@ fn process_request(server: &mut Server, conn: &mut Connection) {
     conn.request = Vec::new();
 }
 
-/// Send chunk on `stream` from `file`, starting at `offset` and of length `size`. Returns the
-/// number of bytes sent.
-fn send_from_file(
-    stream: &mut TcpStream,
-    file: &mut File,
-    mut offset: libc::off_t,
-    size: usize,
+/// Safe wrapper for `libc::sendfile64`.
+fn sendfile64(
+    out_fd: RawFd,
+    in_fd: RawFd,
+    offset: Option<&mut libc::off64_t>,
+    count: usize,
 ) -> nix::Result<usize> {
-    // Limit the size of the data sent per `sendfile` call.
-    let size = min(size, SENDFILE_SIZE_LIMIT);
-    sendfile(
-        stream.as_raw_fd(),
-        file.as_raw_fd(),
-        Some(&mut offset),
-        size,
-    )
+    let offset = offset
+        .map(|offset| offset as *mut _)
+        .unwrap_or(std::ptr::null_mut());
+    let ret = unsafe { libc::sendfile64(out_fd, in_fd, offset, count) };
+    Errno::result(ret).map(|r| r as usize)
 }
 
 /// Sending reply.
@@ -1570,7 +1565,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
     assert!(conn.reply_length >= conn.reply_sent);
 
     let offset = conn.reply_start + conn.reply_sent;
-    // `libc::off_t` may wider than `usize`, so saturate when casting.
+    // `i64` may wider than `usize`, so saturate when casting.
     let send_len = usize::try_from(conn.reply_length - conn.reply_sent).unwrap_or(usize::MAX);
 
     let sent = match conn.body.as_mut().expect("reply has no body") {
@@ -1580,7 +1575,16 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
             let buf = &reply.as_bytes()[offset..offset + send_len];
             socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty())
         }
-        Body::FromFile(file) => send_from_file(&mut conn.socket, file, offset, send_len),
+        Body::FromFile(file) => {
+            let mut offset = offset;
+            let size = min(send_len, SENDFILE_SIZE_LIMIT); // Limit size per syscall.
+            sendfile64(
+                conn.socket.as_raw_fd(),
+                file.as_raw_fd(),
+                Some(&mut offset),
+                size,
+            )
+        }
     };
     conn.last_active = server.now;
     let sent = match sent {
@@ -1596,8 +1600,8 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection) {
             return;
         }
     };
-    conn.reply_sent += libc::off_t::try_from(sent).unwrap();
-    conn.total_sent += libc::off_t::try_from(sent).unwrap();
+    conn.reply_sent += i64::try_from(sent).unwrap();
+    conn.total_sent += i64::try_from(sent).unwrap();
     server.total_out += u64::try_from(sent).unwrap();
 
     // check if we're done sending
@@ -1634,7 +1638,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection) {
 
     assert!(sent > 0);
     conn.header_sent += sent;
-    conn.total_sent += libc::off_t::try_from(sent).unwrap();
+    conn.total_sent += i64::try_from(sent).unwrap();
     server.total_out += u64::try_from(sent).unwrap();
 
     // check if we're done sending header
