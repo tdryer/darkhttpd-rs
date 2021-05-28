@@ -96,7 +96,11 @@ fn usage(server: &Server, argv0: &str) {
         \t\tEnable basic authentication.\n\n\
         \t--ipv6\n\
         \t\tListen on IPv6 address.\n\n",
-        argv0, server.bindport, DEFAULT_INDEX_NAME, DEFAULT_MIME_TYPE, server.timeout_secs
+        argv0,
+        server.bindport,
+        DEFAULT_INDEX_NAME,
+        DEFAULT_MIME_TYPE,
+        server.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
     );
 }
 
@@ -233,7 +237,7 @@ impl LogSink {
 struct Server {
     forward_map: ForwardMap,
     forward_all_url: Option<String>,
-    timeout_secs: libc::c_int,
+    timeout: Option<Duration>,
     bindaddr: Option<String>,
     bindport: u16,
     max_connections: usize,
@@ -265,7 +269,7 @@ impl Server {
         Self {
             forward_map: ForwardMap::new(),
             forward_all_url: None,
-            timeout_secs: 30,
+            timeout: Some(Duration::from_secs(30)),
             bindaddr: None,
             bindport: 8080, /* or 80 if running as root */
             max_connections: usize::MAX,
@@ -298,7 +302,11 @@ impl Server {
         if conn_close {
             "Connection: close\r\n".to_string()
         } else {
-            format!("Keep-Alive: timeout={}\r\n", self.timeout_secs)
+            // TODO: Figure out how to handle timeout being disabled while keep-alive is enabled.
+            format!(
+                "Keep-Alive: timeout={}\r\n",
+                self.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
+            )
         }
     }
 }
@@ -427,9 +435,13 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
             "--no-server-id" => server.want_server_id = false,
             "--timeout" => {
                 let number = args.next().context("missing number after --timeout")?;
-                server.timeout_secs = number
-                    .parse()
+                let timeout_secs = number
+                    .parse::<u64>()
                     .with_context(|| format!("timeout number {} is invalid", number))?;
+                server.timeout = match timeout_secs {
+                    0 => None,
+                    timeout_secs => Some(Duration::from_secs(timeout_secs)),
+                };
             }
             "--auth" => {
                 let user_pass = args.next().context("missing user:pass after --auth")?;
@@ -1746,16 +1758,15 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
     server.accepting = true; // Try to resume accepting if we ran out of sockets.
 }
 
-/// If a connection has been idle for more than timeout_secs, it will be marked as DONE and killed
-/// off in httpd_poll().
+/// If a connection has been idle for more than `server.timeout`, it will be marked as DONE and
+/// killed off in httpd_poll().
 fn poll_check_timeout(server: &Server, conn: &mut Connection) {
-    if server.timeout_secs > 0 {
+    if let Some(timeout) = server.timeout {
         let elapsed = server
             .now
             .duration_since(conn.last_active)
             .unwrap_or(Duration::from_secs(0));
-        // TODO: make timeout_secs a Duration
-        if elapsed.as_secs() >= server.timeout_secs as u64 {
+        if elapsed >= timeout {
             conn.conn_close = true;
             conn.state = ConnectionState::Done;
         }
@@ -1827,11 +1838,15 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
         }
     }
 
-    let mut timeout = Some(TimeVal::from(libc::timeval {
-        tv_sec: server.timeout_secs as libc::time_t,
-        tv_usec: 0,
-    }))
-    .filter(|_| timeout_required);
+    let mut timeout = server
+        .timeout
+        .map(|timeout| {
+            TimeVal::from(libc::timeval {
+                tv_sec: timeout.as_secs() as libc::time_t,
+                tv_usec: 0,
+            })
+        })
+        .filter(|_| timeout_required);
 
     match select(
         None,

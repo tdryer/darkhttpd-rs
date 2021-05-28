@@ -7,6 +7,7 @@ use std::io::{Seek, SeekFrom};
 use std::net::TcpStream;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
+use std::thread::sleep;
 use std::time::Duration;
 use tempfile::NamedTempFile;
 use test_case::test_case;
@@ -194,6 +195,17 @@ fn timeout() {
     let mut buf = String::new();
     // expect EOF before read timeout expires
     assert_eq!(stream.read_to_string(&mut buf).unwrap(), 0);
+}
+
+#[test]
+fn timeout_disabled() {
+    let args = &["--timeout", "0"];
+    let server = Server::with_args(args);
+    let mut stream = server.stream();
+    // Delay enough to cause a timeout if zero is not interpreted correctly.
+    sleep(Duration::from_millis(10));
+    let response = server.send_stream(&mut stream, Request::new("/"));
+    assert_eq!(response.status(), "200 OK");
 }
 
 #[test]
