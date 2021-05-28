@@ -12,9 +12,10 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime};
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{Local, TimeZone, Utc};
+use chrono::{DateTime, Local, Utc};
 use nix::errno::Errno;
 use nix::sys::select::{select, FdSet};
 use nix::sys::sendfile::sendfile;
@@ -239,7 +240,7 @@ struct Server {
     index_name: String,
     no_listing: bool,
     sockin: libc::c_int,
-    now: libc::time_t,
+    now: SystemTime,
     inet6: bool,
     wwwroot: String,
     log_sink: LogSink,
@@ -271,7 +272,7 @@ impl Server {
             index_name: DEFAULT_INDEX_NAME.to_string(),
             no_listing: false,
             sockin: -1,
-            now: 0,
+            now: SystemTime::now(),
             inet6: false,
             wwwroot: String::new(),
             log_sink: LogSink::Stdout,
@@ -611,7 +612,7 @@ impl<'a> std::fmt::Display for Base64Encoded<'a> {
 struct Connection {
     socket: TcpStream,
     client: IpAddr,
-    last_active: libc::time_t,
+    last_active: SystemTime,
     state: ConnectionState,
     request: Vec<u8>,
     method: Option<String>,
@@ -633,7 +634,7 @@ struct Connection {
 }
 impl Connection {
     /// Allocate and initialize an empty connection.
-    fn new(now: libc::time_t, stream: TcpStream, client: IpAddr) -> Self {
+    fn new(now: SystemTime, stream: TcpStream, client: IpAddr) -> Self {
         Self {
             socket: stream,
             client,
@@ -785,21 +786,21 @@ impl MimeMap {
 }
 
 /// RFC1123 formatted date.
-struct HttpDate(libc::time_t);
+struct HttpDate(SystemTime);
 
 impl std::fmt::Display for HttpDate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let datetime = Utc.timestamp(self.0, 0);
+        let datetime = DateTime::<Utc>::from(self.0);
         write!(f, "{}", datetime.format("%a, %d %b %Y %H:%M:%S GMT"))
     }
 }
 
 /// Common Log Format (CLF) formatted date in local timezone.
-struct ClfDate(libc::time_t);
+struct ClfDate(SystemTime);
 
 impl std::fmt::Display for ClfDate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let datetime = Local.timestamp(self.0, 0);
+        let datetime = DateTime::<Local>::from(self.0);
         write!(f, "{}", datetime.format("[%d/%b/%Y:%H:%M:%S %z]"))
     }
 }
@@ -1371,14 +1372,11 @@ fn process_get(server: &Server, conn: &mut Connection) {
     conn.body = Some(Body::FromFile(file));
     let lastmod = metadata
         .modified()
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+        .expect("modified not available this platform");
 
     // handle If-Modified-Since
     if let Some(if_mod_since) = parse_field(conn, "If-Modified-Since: ") {
-        if HttpDate(lastmod.try_into().unwrap()).to_string() == if_mod_since {
+        if HttpDate(lastmod).to_string() == if_mod_since {
             not_modified(server, conn);
             return;
         }
@@ -1421,7 +1419,7 @@ fn process_get(server: &Server, conn: &mut Connection) {
             to,
             metadata.len(),
             mimetype,
-            HttpDate(lastmod.try_into().unwrap())
+            HttpDate(lastmod)
         );
         conn.header = Some(headers);
         conn.http_code = 206;
@@ -1752,7 +1750,12 @@ fn free_connection(server: &mut Server, conn: &mut Connection) {
 /// off in httpd_poll().
 fn poll_check_timeout(server: &Server, conn: &mut Connection) {
     if server.timeout_secs > 0 {
-        if server.now - conn.last_active >= server.timeout_secs as i64 {
+        let elapsed = server
+            .now
+            .duration_since(conn.last_active)
+            .unwrap_or(Duration::from_secs(0));
+        // TODO: make timeout_secs a Duration
+        if elapsed.as_secs() >= server.timeout_secs as u64 {
             conn.conn_close = true;
             conn.state = ConnectionState::Done;
         }
@@ -1853,7 +1856,7 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
     }
 
     // update time
-    server.now = Utc::now().timestamp();
+    server.now = SystemTime::now();
 
     // poll connections that select() says need attention
     if recv_set.contains(server.sockin) {
@@ -2004,13 +2007,17 @@ mod test {
     #[test]
     fn clf_date_works() {
         // contains system's local timezone
-        assert!(ClfDate(1620965123).to_string().contains("May/2021"));
+        assert!(
+            ClfDate(SystemTime::UNIX_EPOCH + Duration::from_secs(1620965123))
+                .to_string()
+                .contains("May/2021")
+        );
     }
 
     #[test]
     fn http_date_works() {
         assert_eq!(
-            HttpDate(1622040683).to_string(),
+            HttpDate(SystemTime::UNIX_EPOCH + Duration::from_secs(1622040683)).to_string(),
             "Wed, 26 May 2021 14:51:23 GMT"
         );
     }
