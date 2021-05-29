@@ -124,7 +124,7 @@ fn main() -> Result<()> {
         );
     }
 
-    let listener = get_listener(&server)?;
+    let listener = server.create_listener()?;
 
     let daemonize = server
         .want_daemon
@@ -286,6 +286,24 @@ impl Server {
                 self.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
             )
         }
+    }
+    fn socket_addr(&self) -> Result<SocketAddr, AddrParseError> {
+        Ok(if self.inet6 {
+            let addr = Ipv6Addr::from_str(self.bindaddr.as_deref().unwrap_or("::"))?;
+            SocketAddr::V6(SocketAddrV6::new(addr, self.bindport, 0, 0))
+        } else {
+            let addr = Ipv4Addr::from_str(self.bindaddr.as_deref().unwrap_or("0.0.0.0"))?;
+            SocketAddr::V4(SocketAddrV4::new(addr, self.bindport))
+        })
+    }
+    /// Initialize the TcpListener. This is the socket that we accept connections from.
+    fn create_listener(&self) -> Result<TcpListener> {
+        let socket_addr = self.socket_addr().context("malformed --addr argument")?;
+        // Sets `SO_REUSEADDR` implicitly.
+        let listener = TcpListener::bind(socket_addr)
+            .with_context(|| format!("failed to create listening socket for {}", socket_addr))?;
+        println!("listening on: http://{}/", socket_addr);
+        Ok(listener)
     }
 }
 
@@ -1905,32 +1923,6 @@ fn httpd_poll(server: &mut Server, listener: &TcpListener, connections: &mut Vec
             index += 1;
         }
     }
-}
-
-fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> {
-    Ok(if server.inet6 {
-        SocketAddr::V6(SocketAddrV6::new(
-            Ipv6Addr::from_str(server.bindaddr.as_deref().unwrap_or("::"))?,
-            server.bindport,
-            0,
-            0,
-        ))
-    } else {
-        SocketAddr::V4(SocketAddrV4::new(
-            Ipv4Addr::from_str(server.bindaddr.as_deref().unwrap_or("0.0.0.0"))?,
-            server.bindport,
-        ))
-    })
-}
-
-/// Initialize the TcpListener. This is the socket that we accept connections from.
-fn get_listener(server: &Server) -> Result<TcpListener> {
-    let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
-    // Sets `SO_REUSEADDR` implicitly.
-    let listener = TcpListener::bind(socket_addr)
-        .with_context(|| format!("failed to create listening socket for {}", socket_addr))?;
-    println!("listening on: http://{}/", socket_addr);
-    Ok(listener)
 }
 
 #[cfg(test)]
