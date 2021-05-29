@@ -30,6 +30,7 @@ use nix::unistd::{
 
 const COPYRIGHT: &str = "copyright (c) 2021 Tom Dryer";
 const DEFAULT_INDEX_NAME: &str = "index.html";
+const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
 const PATH_DEVNULL: &str = "/dev/null";
 const SENDFILE_SIZE_LIMIT: usize = 1 << 20;
 
@@ -230,8 +231,13 @@ impl LogSink {
         Ok(())
     }
 }
+impl Default for LogSink {
+    fn default() -> Self {
+        Self::Stdout
+    }
+}
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Server {
     forward_map: ForwardMap,
     forward_all_url: Option<String>,
@@ -263,32 +269,13 @@ struct Server {
 impl Server {
     fn new() -> Self {
         Self {
-            forward_map: ForwardMap::new(),
-            forward_all_url: None,
             timeout: Some(Duration::from_secs(30)),
-            bindaddr: None,
-            bindport: 8080, /* or 80 if running as root */
-            max_connections: None,
+            bindport: 8080, // or 80 if running as root
             index_name: DEFAULT_INDEX_NAME.to_string(),
-            no_listing: false,
-            inet6: false,
-            wwwroot: String::new(),
-            log_sink: LogSink::Stdout,
-            pidfile_name: None,
-            want_chroot: false,
-            want_daemon: false,
-            want_accf: false,
             want_keepalive: true,
             want_server_id: true,
-            server_hdr: String::new(),
-            auth_key: None,
-            num_requests: 0,
-            total_in: 0,
-            total_out: 0,
             accepting: true,
-            mime_map: MimeMap::parse_default_extension_map(),
-            drop_uid: None,
-            drop_gid: None,
+            ..Default::default()
         }
     }
     fn keep_alive_header(&self, conn_close: bool) -> String {
@@ -739,21 +726,7 @@ struct MimeMap {
     default_mimetype: String,
 }
 
-const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
-
 impl MimeMap {
-    /// Create MimeMap using the default extension map.
-    fn parse_default_extension_map() -> MimeMap {
-        let mut mime_map = MimeMap {
-            mimetypes: HashMap::new(),
-            default_mimetype: DEFAULT_MIME_TYPE.to_string(),
-        };
-        for line in DEFAULT_EXTENSIONS_MAP {
-            mime_map.add_mimetype_line(line);
-        }
-        mime_map
-    }
-
     /// Add extension map from a file.
     fn parse_extension_map_file(&mut self, filename: &OsStr) -> Result<()> {
         let file = File::open(filename)
@@ -790,6 +763,20 @@ impl MimeMap {
             .next()
             .and_then(|extension| self.mimetypes.get(extension))
             .unwrap_or(&self.default_mimetype)
+    }
+}
+
+impl Default for MimeMap {
+    /// Create MimeMap using the default extension map.
+    fn default() -> Self {
+        let mut mime_map = Self {
+            mimetypes: HashMap::new(),
+            default_mimetype: DEFAULT_MIME_TYPE.to_string(),
+        };
+        for line in DEFAULT_EXTENSIONS_MAP {
+            mime_map.add_mimetype_line(line);
+        }
+        mime_map
     }
 }
 
