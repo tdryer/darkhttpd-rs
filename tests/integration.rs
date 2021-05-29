@@ -209,6 +209,30 @@ fn timeout_disabled() {
 }
 
 #[test]
+fn maxconn() {
+    let args = &["--maxconn", "1"];
+    let server = Server::with_args(args);
+    // With max connections limited to one, while one connection is open, requests on a second
+    // connection should time out. Both connections are established from the client's perspective,
+    // but the second is actually queued because the server has not accepted it yet.
+    let _stream = server.stream();
+    assert_eq!(
+        server.send_result(Request::new("/")).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+}
+
+#[test]
+fn maxconn_disabled() {
+    let server = Server::new();
+    // By default, max connections should be unlimited, so so while one connection is open,
+    // requests on a second connection should succeed.
+    let _stream = server.stream();
+    let response = server.send_result(Request::new("/")).unwrap();
+    assert_eq!(response.status(), "200 OK");
+}
+
+#[test]
 fn dirlist_escape() {
     let server = Server::new();
     let mut file = server.create_file("escape(this)name");

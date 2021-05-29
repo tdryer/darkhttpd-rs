@@ -95,36 +95,43 @@ impl Server {
     pub fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
+    // TODO: Refactor tests to use `result` method variants
     pub fn send_stream(&self, stream: &mut TcpStream, request: Request) -> Response {
+        self.send_stream_result(stream, request).unwrap()
+    }
+    pub fn send_stream_result(
+        &self,
+        stream: &mut TcpStream,
+        request: Request,
+    ) -> io::Result<Response> {
         // Set timeouts to prevent tests from hanging
-        stream
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        stream
-            .set_write_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(1)))?;
         // Write request
-        write!(stream, "{} {}", request.method, request.path).unwrap();
+        write!(stream, "{} {}", request.method, request.path)?;
         if request.version.len() > 0 {
-            write!(stream, " HTTP/{}", request.version).unwrap();
+            write!(stream, " HTTP/{}", request.version)?;
         }
-        write!(stream, "{}", request.line_ending).unwrap();
+        write!(stream, "{}", request.line_ending)?;
         for (header_name, header_value) in &request.headers {
             write!(
                 stream,
                 "{}: {}{}",
                 header_name, header_value, request.line_ending
-            )
-            .unwrap();
+            )?;
         }
-        write!(stream, "{}", request.line_ending).unwrap();
+        write!(stream, "{}", request.line_ending)?;
         // Read response
         let has_body = request.method != "HEAD";
-        Response::from_reader(stream, has_body).expect("failed to read response")
+        let response = Response::from_reader(stream, has_body)?;
+        Ok(response)
     }
     pub fn send(&self, request: Request) -> Response {
+        self.send_result(request).unwrap()
+    }
+    pub fn send_result(&self, request: Request) -> io::Result<Response> {
         let mut stream = self.stream();
-        self.send_stream(&mut stream, request)
+        self.send_stream_result(&mut stream, request)
     }
 }
 
@@ -164,6 +171,7 @@ impl Request {
 }
 
 /// HTTP Response from darkhttpd.
+#[derive(Debug)]
 pub struct Response {
     response_line: String,
     headers: HashMap<String, String>,

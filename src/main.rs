@@ -237,7 +237,7 @@ struct Server {
     timeout: Option<Duration>,
     bindaddr: Option<String>,
     bindport: u16,
-    max_connections: usize,
+    max_connections: Option<usize>,
     index_name: String,
     no_listing: bool,
     now: SystemTime,
@@ -268,7 +268,7 @@ impl Server {
             timeout: Some(Duration::from_secs(30)),
             bindaddr: None,
             bindport: 8080, /* or 80 if running as root */
-            max_connections: usize::MAX,
+            max_connections: None,
             index_name: DEFAULT_INDEX_NAME.to_string(),
             no_listing: false,
             now: SystemTime::now(),
@@ -352,9 +352,11 @@ fn parse_commandline(server: &mut Server) -> Result<()> {
             }
             "--maxconn" => {
                 let number = args.next().context("missing number after --maxconn")?;
-                server.max_connections = number
-                    .parse()
-                    .with_context(|| format!("maxconn number {} is invalid", number))?;
+                server.max_connections = Some(
+                    number
+                        .parse()
+                        .with_context(|| format!("maxconn number {} is invalid", number))?,
+                );
             }
             "--log" => {
                 let filename = args.next().context("missing filename after --log")?;
@@ -1812,7 +1814,11 @@ fn httpd_poll(server: &mut Server, listener: &TcpListener, connections: &mut Vec
     let mut send_set = FdSet::new();
     let mut timeout_required = false;
 
-    if server.accepting {
+    let reached_max_connections = match server.max_connections {
+        Some(num) if num >= connections.len() => true,
+        _ => false,
+    };
+    if server.accepting && !reached_max_connections {
         recv_set.insert(listener.as_raw_fd());
     }
 
@@ -1957,11 +1963,11 @@ fn get_listener(server: &Server) -> Result<TcpListener> {
     println!("listening on: http://{}/", socket_addr);
 
     // listen on socket
-    socket::listen(fd, server.max_connections).context("failed to listen for connections")?;
+    socket::listen(fd, 128).context("failed to listen for connections")?;
 
     let listener = unsafe { TcpListener::from_raw_fd(fd) };
 
-    // TODO: Switch to using below code when we have an alternative implementation for `--maxconn`.
+    // TODO: Switch to using below code:
     // TcpListener sets SO_REUSEADDR implicitly.
     //
     // let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
