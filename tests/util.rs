@@ -95,11 +95,7 @@ impl Server {
     pub fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
-    // TODO: Refactor tests to use `result` method variants
-    pub fn send_stream(&self, stream: &mut TcpStream, request: Request) -> Response {
-        self.send_stream_result(stream, request).unwrap()
-    }
-    pub fn send_stream_result(
+    pub fn send_stream(
         &self,
         stream: &mut TcpStream,
         request: Request,
@@ -126,12 +122,9 @@ impl Server {
         let response = Response::from_reader(stream, has_body)?;
         Ok(response)
     }
-    pub fn send(&self, request: Request) -> Response {
-        self.send_result(request).unwrap()
-    }
-    pub fn send_result(&self, request: Request) -> io::Result<Response> {
+    pub fn send(&self, request: Request) -> io::Result<Response> {
         let mut stream = self.stream();
-        self.send_stream_result(&mut stream, request)
+        self.send_stream(&mut stream, request)
     }
 }
 
