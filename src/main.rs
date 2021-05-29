@@ -1778,12 +1778,11 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection) {
 
 /// Accept a connection from sockin and add it to the connection queue.
 fn accept_connection(server: &mut Server, connections: &mut Vec<Connection>) {
-    // TODO: Use `TcpListener::accept` instead
-    let fd = match socket::accept(server.sockin.as_ref().unwrap().as_raw_fd()) {
-        Ok(fd) => fd,
+    let (stream, addr) = match server.sockin.as_ref().unwrap().accept() {
+        Ok((stream, addr)) => (stream, addr),
         Err(e) => {
             // Failed to accept, but try to keep serving existing connections.
-            if e.as_errno() == Some(Errno::EMFILE) || e.as_errno() == Some(Errno::ENFILE) {
+            if matches!(e.raw_os_error(), Some(libc::EMFILE) | Some(libc::ENFILE)) {
                 server.accepting = false;
             }
             eprintln!("warning: accept() failed: {}", e);
@@ -1791,24 +1790,12 @@ fn accept_connection(server: &mut Server, connections: &mut Vec<Connection>) {
         }
     };
 
-    // `socket::accept` doesn't expose the peer address, so request it separately.
-    let addr = match socket::getpeername(fd) {
-        Ok(socket::SockAddr::Inet(addr)) => addr,
-        Ok(_) => panic!("getpeername returned unexpected address type"),
-        Err(e) => {
-            eprintln!("warning: getpeername() failed: {}", e);
-            return;
-        }
-    };
-
-    let stream = unsafe { TcpStream::from_raw_fd(fd) };
-
     stream
         .set_nonblocking(true)
         .expect("set_nonblocking failed");
 
     // Allocate and initialize struct connection.
-    let conn = Connection::new(server.now, stream, addr.ip().to_std());
+    let conn = Connection::new(server.now, stream, addr.ip());
 
     connections.push(conn);
     let num_connections = connections.len();
