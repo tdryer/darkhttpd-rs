@@ -123,7 +123,7 @@ fn main() -> Result<()> {
         );
     }
 
-    init_sockin(&mut server)?;
+    let listener = get_listener(&server)?;
 
     let daemonize = server
         .want_daemon
@@ -177,7 +177,7 @@ fn main() -> Result<()> {
 
     // main loop
     while is_running() {
-        httpd_poll(&mut server, &mut connections);
+        httpd_poll(&mut server, &listener, &mut connections);
     }
 
     pidfile.map(|pidfile| pidfile.remove()).transpose()?;
@@ -240,8 +240,6 @@ struct Server {
     max_connections: usize,
     index_name: String,
     no_listing: bool,
-    // TODO: Refactor things so this doesn't need to be optional.
-    sockin: Option<TcpListener>,
     now: SystemTime,
     inet6: bool,
     wwwroot: String,
@@ -273,7 +271,6 @@ impl Server {
             max_connections: usize::MAX,
             index_name: DEFAULT_INDEX_NAME.to_string(),
             no_listing: false,
-            sockin: None,
             now: SystemTime::now(),
             inet6: false,
             wwwroot: String::new(),
@@ -1776,9 +1773,13 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection) {
     }
 }
 
-/// Accept a connection from sockin and add it to the connection queue.
-fn accept_connection(server: &mut Server, connections: &mut Vec<Connection>) {
-    let (stream, addr) = match server.sockin.as_ref().unwrap().accept() {
+/// Accept a connection from TcpListener and add it to the connection queue.
+fn accept_connection(
+    server: &mut Server,
+    listener: &TcpListener,
+    connections: &mut Vec<Connection>,
+) {
+    let (stream, addr) = match listener.accept() {
         Ok((stream, addr)) => (stream, addr),
         Err(e) => {
             // Failed to accept, but try to keep serving existing connections.
@@ -1806,13 +1807,13 @@ fn accept_connection(server: &mut Server, connections: &mut Vec<Connection>) {
 
 /// Main loop of the httpd - a select() and then delegation to accept connections, handle receiving
 /// of requests, and sending of replies.
-fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
+fn httpd_poll(server: &mut Server, listener: &TcpListener, connections: &mut Vec<Connection>) {
     let mut recv_set = FdSet::new();
     let mut send_set = FdSet::new();
     let mut timeout_required = false;
 
     if server.accepting {
-        recv_set.insert(server.sockin.as_ref().unwrap().as_raw_fd());
+        recv_set.insert(listener.as_raw_fd());
     }
 
     for conn in connections.iter() {
@@ -1865,8 +1866,8 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
     server.now = SystemTime::now();
 
     // poll connections that select() says need attention
-    if recv_set.contains(server.sockin.as_ref().unwrap().as_raw_fd()) {
-        accept_connection(server, connections);
+    if recv_set.contains(listener.as_raw_fd()) {
+        accept_connection(server, listener, connections);
     }
     let mut index = 0;
     while index < connections.len() {
@@ -1930,8 +1931,8 @@ fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> 
     })
 }
 
-/// Initialize the sockin global. This is the socket that we accept connections from.
-fn init_sockin(server: &mut Server) -> Result<()> {
+/// Initialize the TcpListener. This is the socket that we accept connections from.
+fn get_listener(server: &Server) -> Result<TcpListener> {
     let fd = socket::socket(
         match server.inet6 {
             false => socket::AddressFamily::Inet,
@@ -1958,19 +1959,17 @@ fn init_sockin(server: &mut Server) -> Result<()> {
     // listen on socket
     socket::listen(fd, server.max_connections).context("failed to listen for connections")?;
 
-    server.sockin = Some(unsafe { TcpListener::from_raw_fd(fd) });
+    let listener = unsafe { TcpListener::from_raw_fd(fd) };
 
     // TODO: Switch to using below code when we have an alternative implementation for `--maxconn`.
     // TcpListener sets SO_REUSEADDR implicitly.
     //
     // let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
-    // server.sockin = Some(
-    //     TcpListener::bind(socket_addr)
-    //         .with_context(|| format!("failed to bind port {}", server.bindport))?,
-    // );
+    // let listener = TcpListener::bind(socket_addr)
+    //     .with_context(|| format!("failed to bind port {}", server.bindport))?;
     // println!("listening on: http://{}/", socket_addr);
 
-    Ok(())
+    Ok(listener)
 }
 
 #[cfg(test)]
