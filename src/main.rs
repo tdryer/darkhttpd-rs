@@ -6,7 +6,8 @@ use std::fs::{remove_file, File, OpenOptions};
 use std::io::{BufRead, BufWriter, Read, Write};
 use std::mem::MaybeUninit;
 use std::net::{
-    AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, TcpStream,
+    AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6,
+    TcpListener, TcpStream,
 };
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
@@ -179,9 +180,6 @@ fn main() -> Result<()> {
         httpd_poll(&mut server, &mut connections);
     }
 
-    // clean exit
-    close(server.sockin).context("failed to close listening socket")?;
-
     pidfile.map(|pidfile| pidfile.remove()).transpose()?;
 
     // free connections
@@ -242,7 +240,8 @@ struct Server {
     max_connections: usize,
     index_name: String,
     no_listing: bool,
-    sockin: libc::c_int,
+    // TODO: Refactor things so this doesn't need to be optional.
+    sockin: Option<TcpListener>,
     now: SystemTime,
     inet6: bool,
     wwwroot: String,
@@ -274,7 +273,7 @@ impl Server {
             max_connections: usize::MAX,
             index_name: DEFAULT_INDEX_NAME.to_string(),
             no_listing: false,
-            sockin: -1,
+            sockin: None,
             now: SystemTime::now(),
             inet6: false,
             wwwroot: String::new(),
@@ -1779,7 +1778,8 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection) {
 
 /// Accept a connection from sockin and add it to the connection queue.
 fn accept_connection(server: &mut Server, connections: &mut Vec<Connection>) {
-    let fd = match socket::accept(server.sockin) {
+    // TODO: Use `TcpListener::accept` instead
+    let fd = match socket::accept(server.sockin.as_ref().unwrap().as_raw_fd()) {
         Ok(fd) => fd,
         Err(e) => {
             // Failed to accept, but try to keep serving existing connections.
@@ -1825,7 +1825,7 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
     let mut timeout_required = false;
 
     if server.accepting {
-        recv_set.insert(server.sockin);
+        recv_set.insert(server.sockin.as_ref().unwrap().as_raw_fd());
     }
 
     for conn in connections.iter() {
@@ -1878,7 +1878,7 @@ fn httpd_poll(server: &mut Server, connections: &mut Vec<Connection>) {
     server.now = SystemTime::now();
 
     // poll connections that select() says need attention
-    if recv_set.contains(server.sockin) {
+    if recv_set.contains(server.sockin.as_ref().unwrap().as_raw_fd()) {
         accept_connection(server, connections);
     }
     let mut index = 0;
@@ -1945,7 +1945,7 @@ fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> 
 
 /// Initialize the sockin global. This is the socket that we accept connections from.
 fn init_sockin(server: &mut Server) -> Result<()> {
-    server.sockin = socket::socket(
+    let fd = socket::socket(
         match server.inet6 {
             false => socket::AddressFamily::Inet,
             true => socket::AddressFamily::Inet6,
@@ -1957,20 +1957,31 @@ fn init_sockin(server: &mut Server) -> Result<()> {
     .context("failed to create listening socket")?;
 
     // reuse address
-    socket::setsockopt(server.sockin, socket::sockopt::ReuseAddr, &true)
+    socket::setsockopt(fd, socket::sockopt::ReuseAddr, &true)
         .context("failed to set SO_REUSEADDR")?;
 
     let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
     socket::bind(
-        server.sockin,
+        fd,
         &socket::SockAddr::Inet(socket::InetAddr::from_std(&socket_addr)),
     )
     .with_context(|| format!("failed to bind port {}", server.bindport))?;
     println!("listening on: http://{}/", socket_addr);
 
     // listen on socket
-    socket::listen(server.sockin, server.max_connections)
-        .context("failed to listen for connections")?;
+    socket::listen(fd, server.max_connections).context("failed to listen for connections")?;
+
+    server.sockin = Some(unsafe { TcpListener::from_raw_fd(fd) });
+
+    // TODO: Switch to using below code when we have an alternative implementation for `--maxconn`.
+    // TcpListener sets SO_REUSEADDR implicitly.
+    //
+    // let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
+    // server.sockin = Some(
+    //     TcpListener::bind(socket_addr)
+    //         .with_context(|| format!("failed to bind port {}", server.bindport))?,
+    // );
+    // println!("listening on: http://{}/", socket_addr);
 
     Ok(())
 }
