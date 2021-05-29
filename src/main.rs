@@ -10,7 +10,7 @@ use std::net::{
     TcpListener, TcpStream,
 };
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
@@ -1939,42 +1939,11 @@ fn listening_socket_addr(server: &Server) -> Result<SocketAddr, AddrParseError> 
 
 /// Initialize the TcpListener. This is the socket that we accept connections from.
 fn get_listener(server: &Server) -> Result<TcpListener> {
-    let fd = socket::socket(
-        match server.inet6 {
-            false => socket::AddressFamily::Inet,
-            true => socket::AddressFamily::Inet6,
-        },
-        socket::SockType::Stream,
-        socket::SockFlag::empty(),
-        socket::SockProtocol::Tcp,
-    )
-    .context("failed to create listening socket")?;
-
-    // reuse address
-    socket::setsockopt(fd, socket::sockopt::ReuseAddr, &true)
-        .context("failed to set SO_REUSEADDR")?;
-
     let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
-    socket::bind(
-        fd,
-        &socket::SockAddr::Inet(socket::InetAddr::from_std(&socket_addr)),
-    )
-    .with_context(|| format!("failed to bind port {}", server.bindport))?;
+    // Sets `SO_REUSEADDR` implicitly.
+    let listener = TcpListener::bind(socket_addr)
+        .with_context(|| format!("failed to create listening socket for {}", socket_addr))?;
     println!("listening on: http://{}/", socket_addr);
-
-    // listen on socket
-    socket::listen(fd, 128).context("failed to listen for connections")?;
-
-    let listener = unsafe { TcpListener::from_raw_fd(fd) };
-
-    // TODO: Switch to using below code:
-    // TcpListener sets SO_REUSEADDR implicitly.
-    //
-    // let socket_addr = listening_socket_addr(server).context("malformed --addr argument")?;
-    // let listener = TcpListener::bind(socket_addr)
-    //     .with_context(|| format!("failed to bind port {}", server.bindport))?;
-    // println!("listening on: http://{}/", socket_addr);
-
     Ok(listener)
 }
 
