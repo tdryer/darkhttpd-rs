@@ -44,77 +44,15 @@ fn is_running() -> bool {
     RUNNING.load(Ordering::Relaxed)
 }
 
-fn usage(server: &Server, argv0: &str) {
-    print!(
-        "usage:\t{} /path/to/wwwroot [flags]\n\n\
-        flags:\t--port number (default: {}, or 80 if running as root)\n\
-        \t\tSpecifies which port to listen on for connections.\n\
-        \t\tPass 0 to let the system choose any free port for you.\n\n\
-        \t--addr ip (default: all)\n\
-        \t\tIf multiple interfaces are present, specifies\n\
-        \t\twhich one to bind the listening port to.\n\n\
-        \t--maxconn number (default: system maximum)\n\
-        \t\tSpecifies how many concurrent connections to accept.\n\n\
-        \t--log filename (default: stdout)\n\
-        \t\tSpecifies which file to append the request log to.\n\n\
-        \t--syslog\n\
-        \t\tUse syslog for request log.\n\n\
-        \t--chroot (default: don't chroot)\n\
-        \t\tLocks server into wwwroot directory for added security.\n\n\
-        \t--daemon (default: don't daemonize)\n\
-        \t\tDetach from the controlling terminal and run in the background.\n\n\
-        \t--index filename (default: {})\n\
-        \t\tDefault file to serve when a directory is requested.\n\n\
-        \t--no-listing\n\
-        \t\tDo not serve listing if directory is requested.\n\n\
-        \t--mimetypes filename (optional)\n\
-        \t\tParses specified file for extension-MIME associations.\n\n\
-        \t--default-mimetype string (optional, default: {})\n\
-        \t\tFiles with unknown extensions are served as this mimetype.\n\n\
-        \t--uid uid/uname, --gid gid/gname (default: don't privdrop)\n\
-        \t\tDrops privileges to given uid:gid after initialization.\n\n\
-        \t--pidfile filename (default: no pidfile)\n\
-        \t\tWrite PID to the specified file.  Note that if you are\n\
-        \t\tusing --chroot, then the pidfile must be relative to,\n\
-        \t\tand inside the wwwroot.\n\n\
-        \t--no-keepalive\n\
-        \t\tDisables HTTP Keep-Alive functionality.\n\n\
-        \t--forward host url (default: don't forward)\n\
-        \t\tWeb forward (301 redirect).\n\
-        \t\tRequests to the host are redirected to the corresponding url.\n\
-        \t\tThe option may be specified multiple times, in which case\n\
-        \t\tthe host is matched in order of appearance.\n\n\
-        \t--forward-all url (default: don't forward)\n\
-        \t\tWeb forward (301 redirect).\n\
-        \t\tAll requests are redirected to the corresponding url.\n\n\
-        \t--no-server-id\n\
-        \t\tDon't identify the server type in headers\n\
-        \t\tor directory listings.\n\n\
-        \t--timeout secs (default: {})\n\
-        \t\tIf a connection is idle for more than this many seconds,\n\
-        \t\tit will be closed. Set to zero to disable timeouts.\n\n\
-        \t--auth username:password\n\
-        \t\tEnable basic authentication.\n\n\
-        \t--ipv6\n\
-        \t\tListen on IPv6 address.\n\n",
-        argv0,
-        server.bindport,
-        DEFAULT_INDEX_NAME,
-        DEFAULT_MIME_TYPE,
-        server.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
-    );
-}
-
 fn main() -> Result<()> {
-    let mut server = Server::new();
-
     println!(
         "{}/{}, {}.",
         env!("CARGO_PKG_NAME"),
         env!("CARGO_PKG_VERSION"),
         COPYRIGHT,
     );
-    parse_commandline(&mut server)?;
+
+    let mut server = Server::from_command_line()?;
 
     if !server.want_no_server_id {
         server.server_hdr = format!(
@@ -272,13 +210,205 @@ struct Server {
     drop_gid: Option<Gid>,
 }
 impl Server {
-    fn new() -> Self {
-        Self {
+    fn from_command_line() -> Result<Self> {
+        let mut server = Self {
             timeout: Some(Duration::from_secs(30)),
             bindport: if getuid().is_root() { 80 } else { 8080 },
             index_name: DEFAULT_INDEX_NAME.to_string(),
             ..Default::default()
+        };
+        // TODO: use std::env::args_os to allow non-UTF-8 filenames
+        let mut args = std::env::args();
+        let name = args.next().expect("expected at least one argument");
+        match args.next().as_deref() {
+            None | Some("--help") => {
+                server.usage(&name); // no wwwroot given
+                std::process::exit(0);
+            }
+            Some(wwwroot) => {
+                server.wwwroot = wwwroot.to_string();
+                // Strip ending slash.
+                if server.wwwroot.ends_with('/') {
+                    server.wwwroot.pop();
+                }
+            }
+        };
+        while let Some(arg) = args.next().as_deref() {
+            match arg {
+                "--port" => {
+                    let number = args.next().context("missing number after --port")?;
+                    server.bindport = number
+                        .parse()
+                        .with_context(|| format!("port number {} is invalid", number))?;
+                }
+                "--addr" => {
+                    server.bindaddr = Some(args.next().context("missing ip after --addr")?);
+                }
+                "--maxconn" => {
+                    let number = args.next().context("missing number after --maxconn")?;
+                    server.max_connections = Some(
+                        number
+                            .parse()
+                            .with_context(|| format!("maxconn number {} is invalid", number))?,
+                    );
+                }
+                "--log" => {
+                    let filename = args.next().context("missing filename after --log")?;
+                    server.log_sink = LogSink::File(BufWriter::new(
+                        OpenOptions::new()
+                            .append(true)
+                            .create(true)
+                            .open(&filename)
+                            .with_context(|| format!("failed to open log file {}", filename))?,
+                    ))
+                }
+                "--chroot" => server.want_chroot = true,
+                "--daemon" => server.want_daemon = true,
+                "--index" => {
+                    server.index_name = args.next().context("missing filename after --index")?;
+                }
+                "--no-listing" => server.no_listing = true,
+                "--mimetypes" => {
+                    let filename = args.next().context("missing filename after --mimetypes")?;
+                    server
+                        .mime_map
+                        .parse_extension_map_file(&OsString::from(filename))?;
+                }
+                "--default-mimetype" => {
+                    server.mime_map.default_mimetype = args
+                        .next()
+                        .context("missing string after --default-mimetype")?;
+                }
+                "--uid" => {
+                    let uid = args.next().context("missing uid after --uid")?;
+                    let user1 = User::from_name(&uid).context("getpwnam failed")?;
+                    let user2 = uid
+                        .parse()
+                        .ok()
+                        .and_then(|uid| User::from_uid(Uid::from_raw(uid)).transpose())
+                        .transpose()
+                        .context("getpwuid failed")?;
+                    let user = user1
+                        .or(user2)
+                        .with_context(|| format!("no such uid: `{}'", uid))?;
+                    server.drop_uid = Some(user.uid)
+                }
+                "--gid" => {
+                    let gid = args.next().context("missing gid after --gid")?;
+                    let group1 = Group::from_name(&gid).context("getgrnam failed")?;
+                    let group2 = gid
+                        .parse()
+                        .ok()
+                        .and_then(|gid| Group::from_gid(Gid::from_raw(gid)).transpose())
+                        .transpose()
+                        .context("getgrgid failed")?;
+                    let group = group1
+                        .or(group2)
+                        .with_context(|| format!("no such gid: `{}'", gid))?;
+                    server.drop_gid = Some(group.gid)
+                }
+                "--pidfile" => {
+                    server.pidfile_name =
+                        Some(args.next().context("missing filename after --pidfile")?);
+                }
+                "--no-keepalive" => server.want_no_keepalive = true,
+                "--accf" => server.want_accf = true, // TODO: remove?
+                "--syslog" => server.log_sink = LogSink::Syslog,
+                "--forward" => {
+                    let host = args.next().context("missing host after --forward")?;
+                    let url = args.next().context("missing url after --forward")?;
+                    server.forward_map.insert(host, url);
+                }
+                "--forward-all" => {
+                    server.forward_all_url =
+                        Some(args.next().context("missing url after --forward-all")?)
+                }
+                "--no-server-id" => server.want_no_server_id = true,
+                "--timeout" => {
+                    let number = args.next().context("missing number after --timeout")?;
+                    let timeout_secs = number
+                        .parse::<u64>()
+                        .with_context(|| format!("timeout number {} is invalid", number))?;
+                    server.timeout = match timeout_secs {
+                        0 => None,
+                        timeout_secs => Some(Duration::from_secs(timeout_secs)),
+                    };
+                }
+                "--auth" => {
+                    let user_pass = args.next().context("missing user:pass after --auth")?;
+                    if !user_pass.contains(':') {
+                        return Err(anyhow!("expected user:pass after --auth"));
+                    }
+                    server.auth_key =
+                        Some(format!("Basic {}", Base64Encoded(user_pass.as_bytes())));
+                }
+                "--ipv6" => server.inet6 = true,
+                _ => {
+                    return Err(anyhow!("unknown argument `{}'", arg));
+                }
+            }
         }
+        Ok(server)
+    }
+    fn usage(&self, argv0: &str) {
+        print!(
+            "usage:\t{} /path/to/wwwroot [flags]\n\n\
+            flags:\t--port number (default: {}, or 80 if running as root)\n\
+            \t\tSpecifies which port to listen on for connections.\n\
+            \t\tPass 0 to let the system choose any free port for you.\n\n\
+            \t--addr ip (default: all)\n\
+            \t\tIf multiple interfaces are present, specifies\n\
+            \t\twhich one to bind the listening port to.\n\n\
+            \t--maxconn number (default: system maximum)\n\
+            \t\tSpecifies how many concurrent connections to accept.\n\n\
+            \t--log filename (default: stdout)\n\
+            \t\tSpecifies which file to append the request log to.\n\n\
+            \t--syslog\n\
+            \t\tUse syslog for request log.\n\n\
+            \t--chroot (default: don't chroot)\n\
+            \t\tLocks server into wwwroot directory for added security.\n\n\
+            \t--daemon (default: don't daemonize)\n\
+            \t\tDetach from the controlling terminal and run in the background.\n\n\
+            \t--index filename (default: {})\n\
+            \t\tDefault file to serve when a directory is requested.\n\n\
+            \t--no-listing\n\
+            \t\tDo not serve listing if directory is requested.\n\n\
+            \t--mimetypes filename (optional)\n\
+            \t\tParses specified file for extension-MIME associations.\n\n\
+            \t--default-mimetype string (optional, default: {})\n\
+            \t\tFiles with unknown extensions are served as this mimetype.\n\n\
+            \t--uid uid/uname, --gid gid/gname (default: don't privdrop)\n\
+            \t\tDrops privileges to given uid:gid after initialization.\n\n\
+            \t--pidfile filename (default: no pidfile)\n\
+            \t\tWrite PID to the specified file.  Note that if you are\n\
+            \t\tusing --chroot, then the pidfile must be relative to,\n\
+            \t\tand inside the wwwroot.\n\n\
+            \t--no-keepalive\n\
+            \t\tDisables HTTP Keep-Alive functionality.\n\n\
+            \t--forward host url (default: don't forward)\n\
+            \t\tWeb forward (301 redirect).\n\
+            \t\tRequests to the host are redirected to the corresponding url.\n\
+            \t\tThe option may be specified multiple times, in which case\n\
+            \t\tthe host is matched in order of appearance.\n\n\
+            \t--forward-all url (default: don't forward)\n\
+            \t\tWeb forward (301 redirect).\n\
+            \t\tAll requests are redirected to the corresponding url.\n\n\
+            \t--no-server-id\n\
+            \t\tDon't identify the server type in headers\n\
+            \t\tor directory listings.\n\n\
+            \t--timeout secs (default: {})\n\
+            \t\tIf a connection is idle for more than this many seconds,\n\
+            \t\tit will be closed. Set to zero to disable timeouts.\n\n\
+            \t--auth username:password\n\
+            \t\tEnable basic authentication.\n\n\
+            \t--ipv6\n\
+            \t\tListen on IPv6 address.\n\n",
+            argv0,
+            self.bindport,
+            DEFAULT_INDEX_NAME,
+            DEFAULT_MIME_TYPE,
+            self.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
+        );
     }
     fn keep_alive_header(&self, conn_close: bool) -> String {
         // TODO: Build this string once and reuse it.
@@ -319,143 +449,6 @@ fn getrusage() -> std::io::Result<libc::rusage> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(unsafe { rusage.assume_init() })
-}
-
-fn parse_commandline(server: &mut Server) -> Result<()> {
-    // TODO: use std::env::args_os to allow non-UTF-8 filenames
-    let mut args = std::env::args();
-
-    let name = args.next().expect("expected at least one argument");
-
-    match args.next().as_deref() {
-        None | Some("--help") => {
-            usage(server, &name); // no wwwroot given
-            std::process::exit(0);
-        }
-        Some(wwwroot) => {
-            server.wwwroot = wwwroot.to_string();
-            // Strip ending slash.
-            if server.wwwroot.ends_with('/') {
-                server.wwwroot.pop();
-            }
-        }
-    };
-
-    while let Some(arg) = args.next().as_deref() {
-        match arg {
-            "--port" => {
-                let number = args.next().context("missing number after --port")?;
-                server.bindport = number
-                    .parse()
-                    .with_context(|| format!("port number {} is invalid", number))?;
-            }
-            "--addr" => {
-                server.bindaddr = Some(args.next().context("missing ip after --addr")?);
-            }
-            "--maxconn" => {
-                let number = args.next().context("missing number after --maxconn")?;
-                server.max_connections = Some(
-                    number
-                        .parse()
-                        .with_context(|| format!("maxconn number {} is invalid", number))?,
-                );
-            }
-            "--log" => {
-                let filename = args.next().context("missing filename after --log")?;
-                server.log_sink = LogSink::File(BufWriter::new(
-                    OpenOptions::new()
-                        .append(true)
-                        .create(true)
-                        .open(&filename)
-                        .with_context(|| format!("failed to open log file {}", filename))?,
-                ))
-            }
-            "--chroot" => server.want_chroot = true,
-            "--daemon" => server.want_daemon = true,
-            "--index" => {
-                server.index_name = args.next().context("missing filename after --index")?;
-            }
-            "--no-listing" => server.no_listing = true,
-            "--mimetypes" => {
-                let filename = args.next().context("missing filename after --mimetypes")?;
-                server
-                    .mime_map
-                    .parse_extension_map_file(&OsString::from(filename))?;
-            }
-            "--default-mimetype" => {
-                server.mime_map.default_mimetype = args
-                    .next()
-                    .context("missing string after --default-mimetype")?;
-            }
-            "--uid" => {
-                let uid = args.next().context("missing uid after --uid")?;
-                let user1 = User::from_name(&uid).context("getpwnam failed")?;
-                let user2 = uid
-                    .parse()
-                    .ok()
-                    .and_then(|uid| User::from_uid(Uid::from_raw(uid)).transpose())
-                    .transpose()
-                    .context("getpwuid failed")?;
-                let user = user1
-                    .or(user2)
-                    .with_context(|| format!("no such uid: `{}'", uid))?;
-                server.drop_uid = Some(user.uid)
-            }
-            "--gid" => {
-                let gid = args.next().context("missing gid after --gid")?;
-                let group1 = Group::from_name(&gid).context("getgrnam failed")?;
-                let group2 = gid
-                    .parse()
-                    .ok()
-                    .and_then(|gid| Group::from_gid(Gid::from_raw(gid)).transpose())
-                    .transpose()
-                    .context("getgrgid failed")?;
-                let group = group1
-                    .or(group2)
-                    .with_context(|| format!("no such gid: `{}'", gid))?;
-                server.drop_gid = Some(group.gid)
-            }
-            "--pidfile" => {
-                server.pidfile_name =
-                    Some(args.next().context("missing filename after --pidfile")?);
-            }
-            "--no-keepalive" => server.want_no_keepalive = true,
-            "--accf" => server.want_accf = true, // TODO: remove?
-            "--syslog" => server.log_sink = LogSink::Syslog,
-            "--forward" => {
-                let host = args.next().context("missing host after --forward")?;
-                let url = args.next().context("missing url after --forward")?;
-                server.forward_map.insert(host, url);
-            }
-            "--forward-all" => {
-                server.forward_all_url =
-                    Some(args.next().context("missing url after --forward-all")?)
-            }
-            "--no-server-id" => server.want_no_server_id = true,
-            "--timeout" => {
-                let number = args.next().context("missing number after --timeout")?;
-                let timeout_secs = number
-                    .parse::<u64>()
-                    .with_context(|| format!("timeout number {} is invalid", number))?;
-                server.timeout = match timeout_secs {
-                    0 => None,
-                    timeout_secs => Some(Duration::from_secs(timeout_secs)),
-                };
-            }
-            "--auth" => {
-                let user_pass = args.next().context("missing user:pass after --auth")?;
-                if !user_pass.contains(':') {
-                    return Err(anyhow!("expected user:pass after --auth"));
-                }
-                server.auth_key = Some(format!("Basic {}", Base64Encoded(user_pass.as_bytes())));
-            }
-            "--ipv6" => server.inet6 = true,
-            _ => {
-                return Err(anyhow!("unknown argument `{}'", arg));
-            }
-        }
-    }
-    Ok(())
 }
 
 const PIDFILE_MODE: u32 = 0o600;
