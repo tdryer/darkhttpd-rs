@@ -624,7 +624,66 @@ impl<'a> std::fmt::Display for Base64Encoded<'a> {
     }
 }
 
-// TODO: Oxidize types
+// TODO: take buffer instead of Connection
+// TODO: make parse_field a method
+// TODO: remove these fields from Connection
+/// An HTTP request.
+struct Request {
+    method: String,
+    url: String,
+    conn_close: bool,
+    referer: Option<String>,
+    user_agent: Option<String>,
+    authorization: Option<String>,
+    range_begin: Option<i64>,
+    range_end: Option<i64>,
+}
+impl Request {
+    /// Parse an HTTP request.
+    fn parse(conn: &mut Connection) -> Option<Request> {
+        let request = std::str::from_utf8(&conn.buffer).unwrap();
+        let mut lines = request.split(|c| matches!(c, '\r' | '\n'));
+        let mut request_line = lines.next().unwrap().split(' ');
+        let method = request_line.next()?.to_uppercase();
+        let url = request_line.next()?.to_string();
+        let mut conn_close = true;
+
+        // parse protocol to determine conn.close
+        if let Some(protocol) = request_line.next() {
+            if protocol.to_uppercase() == "HTTP/1.1" {
+                conn_close = false;
+            }
+        }
+
+        // parse connection header
+        if let Some(connection) = parse_field(conn, "Connection: ") {
+            let connection = connection.to_lowercase();
+            if connection == "close" {
+                conn_close = true;
+            } else if connection == "keep-alive" {
+                conn_close = false;
+            }
+        }
+
+        // parse important fields
+        let referer = parse_field(conn, "Referer: ");
+        let user_agent = parse_field(conn, "User-Agent: ");
+        let authorization = parse_field(conn, "Authorization: ");
+        let (range_begin, range_end) = parse_range_field(conn);
+
+        Some(Request {
+            method,
+            url,
+            conn_close,
+            referer,
+            user_agent,
+            authorization,
+            range_begin,
+            range_end,
+        })
+    }
+}
+
 struct Connection {
     socket: TcpStream,
     client: IpAddr,
@@ -1013,10 +1072,10 @@ fn find(needle: &[u8], haystack: &[u8]) -> Option<usize> {
 
 /// Parse a Range: field into range_begin and range_end. Only handles the first range if a list is
 /// given. Sets range_{begin,end}_given to 1 if either part of the range is given.
-fn parse_range_field(conn: &mut Connection) {
+fn parse_range_field(conn: &mut Connection) -> (Option<i64>, Option<i64>) {
     let range = match parse_field(conn, "Range: bytes=") {
         Some(range) => range,
-        None => return,
+        None => return (None, None),
     };
 
     // Valid because parse_field returns CString::into_raw
@@ -1027,21 +1086,19 @@ fn parse_range_field(conn: &mut Connection) {
 
     // there must be a hyphen here
     if remaining.is_empty() || remaining[0] != b'-' {
-        return;
+        return (None, None);
     }
     let remaining = &remaining[1..];
-
-    conn.range_begin = range_begin;
 
     // parse number after hyphen
     let (range_end, remaining) = parse_offset(remaining);
 
     // must be end of string or a list to be valid
     if !remaining.is_empty() && remaining[0] != b',' {
-        return;
+        return (None, None);
     }
 
-    conn.range_end = range_end;
+    (range_begin, range_end)
 }
 
 fn parse_offset(data: &[u8]) -> (Option<i64>, &[u8]) {
@@ -1469,81 +1526,42 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
     conn.http_code = 200;
 }
 
-/// Parse an HTTP request like "GET / HTTP/1.1" to get the method (GET), the url (/), the referer
-/// (if given) and the user-agent (if given). Remember to deallocate all these buffers. The method
-/// will be returned in uppercase.
-fn parse_request(server: &Server, conn: &mut Connection) -> bool {
-    let request = std::str::from_utf8(&conn.buffer).unwrap();
-    let mut lines = request.split(|c| matches!(c, '\r' | '\n'));
-    let mut request_line = lines.next().unwrap().split(' ');
-
-    // parse method
-    if let Some(method) = request_line.next() {
-        conn.method = Some(method.to_uppercase())
-    } else {
-        return false;
-    }
-
-    // parse URL
-    if let Some(url) = request_line.next() {
-        conn.url = Some(url.to_string());
-    } else {
-        return false;
-    }
-
-    // parse protocol to determine conn.close
-    if let Some(protocol) = request_line.next() {
-        if protocol.to_uppercase() == "HTTP/1.1" {
-            conn.conn_close = false;
-        }
-    }
-
-    // parse connection header
-    if let Some(connection) = parse_field(conn, "Connection: ") {
-        let connection = connection.to_lowercase();
-        if connection == "close" {
-            conn.conn_close = true;
-        } else if connection == "keep-alive" {
-            conn.conn_close = false;
-        }
-    }
-
-    // cmdline flag can be used to deny keep-alive
-    if server.want_no_keepalive {
-        conn.conn_close = true;
-    }
-
-    // parse important fields
-    conn.referer = parse_field(conn, "Referer: ");
-    conn.user_agent = parse_field(conn, "User-Agent: ");
-    conn.authorization = parse_field(conn, "Authorization: ");
-    parse_range_field(conn);
-
-    true
-}
-
 /// Process a request: build the header and reply, advance state.
 fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) {
-    let result = parse_request(server, conn);
+    match Request::parse(conn) {
+        Some(request) => {
+            // TODO: Phase out the Connection fields
+            conn.method = Some(request.method);
+            conn.url = Some(request.url);
+            // cmdline flag can be used to deny keep-alive
+            conn.conn_close = request.conn_close || server.want_no_keepalive;
+            conn.referer = request.referer;
+            conn.user_agent = request.user_agent;
+            conn.authorization = request.authorization;
+            conn.range_begin = request.range_begin;
+            conn.range_end = request.range_end;
 
-    if !result {
-        let reason = "You sent a request that the server couldn't understand.";
-        default_reply(server, conn, now, 400, "Bad Request", reason);
-    } else if server.auth_key.is_some()
-        && (conn.authorization.is_none()
-            || conn.authorization.as_deref() != server.auth_key.as_deref())
-    {
-        let reason = "Access denied due to invalid credentials.";
-        default_reply(server, conn, now, 401, "Unauthorized", reason);
-    } else if conn.method.as_deref().unwrap() == "GET" {
-        process_get(server, conn, now);
-    } else if conn.method.as_deref().unwrap() == "HEAD" {
-        process_get(server, conn, now);
-        conn.body = None;
-    } else {
-        let reason = "The method you specified is not implemented.";
-        default_reply(server, conn, now, 501, "Not Implemented", reason);
-    }
+            if server.auth_key.is_some()
+                && (conn.authorization.is_none()
+                    || conn.authorization.as_deref() != server.auth_key.as_deref())
+            {
+                let reason = "Access denied due to invalid credentials.";
+                default_reply(server, conn, now, 401, "Unauthorized", reason);
+            } else if conn.method.as_deref().unwrap() == "GET" {
+                process_get(server, conn, now);
+            } else if conn.method.as_deref().unwrap() == "HEAD" {
+                process_get(server, conn, now);
+                conn.body = None;
+            } else {
+                let reason = "The method you specified is not implemented.";
+                default_reply(server, conn, now, 501, "Not Implemented", reason);
+            }
+        }
+        None => {
+            let reason = "You sent a request that the server couldn't understand.";
+            default_reply(server, conn, now, 400, "Bad Request", reason);
+        }
+    };
 
     // advance state
     conn.state = ConnectionState::SendHeader;
