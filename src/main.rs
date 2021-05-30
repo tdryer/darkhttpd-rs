@@ -174,11 +174,17 @@ fn main() -> Result<()> {
         .map(|daemonize| daemonize.finish().context("failed to daemonize"))
         .transpose()?;
 
+    let mut files_exhausted = false;
     let mut connections = Vec::new();
 
     // main loop
     while is_running() {
-        httpd_poll(&mut server, &listener, &mut connections);
+        httpd_poll(
+            &mut server,
+            &listener,
+            &mut files_exhausted,
+            &mut connections,
+        );
     }
 
     pidfile.map(|pidfile| pidfile.remove()).transpose()?;
@@ -261,7 +267,6 @@ struct Server {
     num_requests: u64,
     total_in: u64,
     total_out: u64,
-    files_exhausted: bool,
     mime_map: MimeMap,
     drop_uid: Option<Uid>,
     drop_gid: Option<Gid>,
@@ -1770,6 +1775,7 @@ fn poll_check_timeout(server: &Server, conn: &mut Connection, now: SystemTime) {
 fn accept_connection(
     server: &mut Server,
     listener: &TcpListener,
+    files_exhausted: &mut bool,
     now: SystemTime,
     connections: &mut Vec<Connection>,
 ) {
@@ -1778,7 +1784,7 @@ fn accept_connection(
         Err(e) => {
             // Failed to accept, but try to keep serving existing connections.
             if matches!(e.raw_os_error(), Some(libc::EMFILE) | Some(libc::ENFILE)) {
-                server.files_exhausted = true;
+                *files_exhausted = true;
             }
             eprintln!("warning: accept() failed: {}", e);
             return;
@@ -1801,14 +1807,19 @@ fn accept_connection(
 
 /// Main loop of the httpd - a select() and then delegation to accept connections, handle receiving
 /// of requests, and sending of replies.
-fn httpd_poll(server: &mut Server, listener: &TcpListener, connections: &mut Vec<Connection>) {
+fn httpd_poll(
+    server: &mut Server,
+    listener: &TcpListener,
+    files_exhausted: &mut bool,
+    connections: &mut Vec<Connection>,
+) {
     let mut recv_set = FdSet::new();
     let mut send_set = FdSet::new();
     let mut timeout_required = false;
 
     let reached_max_connections =
         matches!(server.max_connections, Some(num) if num >= connections.len());
-    if !server.files_exhausted && !reached_max_connections {
+    if !*files_exhausted && !reached_max_connections {
         recv_set.insert(listener.as_raw_fd());
     }
 
@@ -1863,7 +1874,7 @@ fn httpd_poll(server: &mut Server, listener: &TcpListener, connections: &mut Vec
 
     // poll connections that select() says need attention
     if recv_set.contains(listener.as_raw_fd()) {
-        accept_connection(server, listener, now, connections);
+        accept_connection(server, listener, files_exhausted, now, connections);
     }
     let mut index = 0;
     while index < connections.len() {
@@ -1899,7 +1910,7 @@ fn httpd_poll(server: &mut Server, listener: &TcpListener, connections: &mut Vec
             if conn.conn_close {
                 connections.remove(index);
                 // Try to resume accepting if we ran out of sockets.
-                server.files_exhausted = false;
+                *files_exhausted = false;
             } else {
                 conn.recycle();
                 // and go right back to recv_request without going through select() again.
