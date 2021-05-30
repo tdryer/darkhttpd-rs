@@ -138,16 +138,7 @@ fn main() -> Result<()> {
     // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
     // will be closed. It's not clear whether this was intentional.
     if !matches!(server.log_sink, LogSink::Stdout) {
-        let rusage = getrusage().context("failed to get resource usage")?;
-        println!(
-            "CPU time used: {}.{:02} user, {}.{:02} system",
-            rusage.ru_utime.tv_sec,
-            rusage.ru_utime.tv_usec / 10000,
-            rusage.ru_stime.tv_sec,
-            rusage.ru_stime.tv_usec / 10000,
-        );
-        println!("Requests: {}", stats.num_requests);
-        println!("Bytes: {} in, {} out", stats.total_in, stats.total_out);
+        stats.print()?;
     }
     Ok(())
 }
@@ -446,6 +437,21 @@ struct ServerStats {
     num_requests: u64,
     total_in: u64,
     total_out: u64,
+}
+impl ServerStats {
+    fn print(&self) -> Result<()> {
+        let rusage = getrusage().context("failed to get resource usage")?;
+        println!(
+            "CPU time used: {}.{:02} user, {}.{:02} system",
+            rusage.ru_utime.tv_sec,
+            rusage.ru_utime.tv_usec / 10000,
+            rusage.ru_stime.tv_sec,
+            rusage.ru_stime.tv_usec / 10000,
+        );
+        println!("Requests: {}", self.num_requests);
+        println!("Bytes: {} in, {} out", self.total_in, self.total_out);
+        Ok(())
+    }
 }
 
 /// Safe wrapper for `libc::getrusage`.
