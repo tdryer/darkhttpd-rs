@@ -185,8 +185,8 @@ fn main() -> Result<()> {
 
     // free connections
     let now = SystemTime::now();
-    for mut conn in connections.drain(..) {
-        free_connection(&mut server, &mut conn, now);
+    for conn in connections.drain(..) {
+        log_connection(&mut server, &conn, now);
     }
 
     // Original darkhttpd only prints usage stats if logfile is specified, because otherwise stdout
@@ -1752,13 +1752,6 @@ fn log_connection(server: &mut Server, conn: &Connection, now: SystemTime) {
         .expect("failed to write log message");
 }
 
-/// Log a connection, then cleanly deallocate its internals.
-fn free_connection(server: &mut Server, conn: &mut Connection, now: SystemTime) {
-    log_connection(server, conn, now);
-
-    server.files_exhausted = false; // Try to resume accepting if we ran out of sockets.
-}
-
 /// If a connection has been idle for more than `server.timeout`, it will be marked as DONE and
 /// killed off in httpd_poll().
 fn poll_check_timeout(server: &Server, conn: &mut Connection, now: SystemTime) {
@@ -1902,11 +1895,12 @@ fn httpd_poll(server: &mut Server, listener: &TcpListener, connections: &mut Vec
         // Handling SEND_REPLY could have set the state to done.
         if conn.state == ConnectionState::Done {
             // clean out finished connection
+            log_connection(server, conn, now);
             if conn.conn_close {
-                free_connection(server, conn, now);
                 connections.remove(index);
+                // Try to resume accepting if we ran out of sockets.
+                server.files_exhausted = false;
             } else {
-                free_connection(server, conn, now);
                 conn.recycle();
                 // and go right back to recv_request without going through select() again.
                 poll_recv_request(server, conn, now);
