@@ -690,13 +690,7 @@ struct Connection {
     last_active: SystemTime,
     state: ConnectionState,
     buffer: Vec<u8>,
-    method: Option<String>,
-    url: Option<String>,
-    referer: Option<String>,
-    user_agent: Option<String>,
-    authorization: Option<String>,
-    range_begin: Option<i64>,
-    range_end: Option<i64>,
+    request: Option<Request>,
     header: Option<String>,
     header_sent: usize,
     http_code: u16,
@@ -716,13 +710,7 @@ impl Connection {
             last_active: now,
             state: ConnectionState::ReceiveRequest,
             buffer: Vec::new(),
-            method: None,
-            url: None,
-            referer: None,
-            user_agent: None,
-            authorization: None,
-            range_begin: None,
-            range_end: None,
+            request: None,
             header: None,
             header_sent: 0,
             http_code: 0,
@@ -739,13 +727,7 @@ impl Connection {
     fn recycle(&mut self) {
         // don't reset conn.client
         self.buffer = Vec::new();
-        self.method = None;
-        self.url = None;
-        self.referer = None;
-        self.user_agent = None;
-        self.authorization = None;
-        self.range_begin = None;
-        self.range_end = None;
+        self.request = None;
         self.header = None;
         self.header_sent = 0;
         self.http_code = 0;
@@ -1333,7 +1315,8 @@ fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&
 
 /// Return range based on header values and file length.
 fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
-    match (conn.range_begin, conn.range_end) {
+    let request = conn.request.as_ref().expect("missing request");
+    match (request.range_begin, request.range_end) {
         // eg. 100-200
         (Some(from), Some(to)) => Some((from, min(to, file_len - 1))),
         // eg. 100- :: yields 100 to end
@@ -1346,9 +1329,18 @@ fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
 
 /// Process a GET/HEAD request.
 fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
+    // TODO: Propagate Request via arguments instead?
+
     // strip query params
-    let url = conn.url.as_ref().unwrap();
-    let stripped_url = url.splitn(2, '?').next().unwrap().to_string();
+    let stripped_url = conn
+        .request
+        .as_ref()
+        .expect("missing request")
+        .url
+        .splitn(2, '?')
+        .next()
+        .unwrap()
+        .to_string();
 
     // work out path of file being requested
     let decoded_url = UrlDecoded(&stripped_url).to_string();
@@ -1436,7 +1428,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
     };
 
     if metadata.is_dir() {
-        let url = format!("{}/", conn.url.as_ref().unwrap());
+        let url = format!("{}/", conn.request.as_ref().expect("missing request").url);
         redirect(server, conn, now, &url);
         return;
     } else if !metadata.is_file() {
@@ -1530,26 +1522,23 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
 fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) {
     match Request::parse(conn) {
         Some(request) => {
-            // TODO: Phase out the Connection fields
-            conn.method = Some(request.method);
-            conn.url = Some(request.url);
             // cmdline flag can be used to deny keep-alive
             conn.conn_close = request.conn_close || server.want_no_keepalive;
-            conn.referer = request.referer;
-            conn.user_agent = request.user_agent;
-            conn.authorization = request.authorization;
-            conn.range_begin = request.range_begin;
-            conn.range_end = request.range_end;
-
+            conn.request = Some(request);
+            let authorization = &conn
+                .request
+                .as_ref()
+                .expect("missing request")
+                .authorization;
             if server.auth_key.is_some()
-                && (conn.authorization.is_none()
-                    || conn.authorization.as_deref() != server.auth_key.as_deref())
+                && (authorization.is_none()
+                    || authorization.as_deref() != server.auth_key.as_deref())
             {
                 let reason = "Access denied due to invalid credentials.";
                 default_reply(server, conn, now, 401, "Unauthorized", reason);
-            } else if conn.method.as_deref().unwrap() == "GET" {
+            } else if conn.request.as_ref().expect("missing request").method == "GET" {
                 process_get(server, conn, now);
-            } else if conn.method.as_deref().unwrap() == "HEAD" {
+            } else if conn.request.as_ref().expect("missing request").method == "HEAD" {
                 process_get(server, conn, now);
                 conn.body = None;
             } else {
@@ -1759,24 +1748,21 @@ impl<'a> std::fmt::Display for LogEncoded<'a> {
 
 /// Add a connection's details to the logfile.
 fn log_connection(server: &mut Server, conn: &Connection, now: SystemTime) {
-    if conn.http_code == 0 {
-        return; // invalid - died in request
-    }
-    let method = match &conn.method {
-        Some(method) => method,
-        // invalid - didn't parse - maybe too long
-        None => return,
+    // TODO: Make logging request-oriented?
+    let request = match conn.request.as_ref() {
+        Some(request) => request,
+        None => return, // request was not parsed
     };
     let message = format!(
         "{} - - {} \"{} {} HTTP/1.1\" {} {} \"{}\" \"{}\"\n",
         conn.client,
         ClfDate(now),
-        LogEncoded(method),
-        LogEncoded(conn.url.as_ref().unwrap()),
+        LogEncoded(&request.method),
+        LogEncoded(&request.url),
         conn.http_code,
         conn.total_sent,
-        LogEncoded(conn.referer.as_deref().unwrap_or("")),
-        LogEncoded(conn.user_agent.as_deref().unwrap_or(""))
+        LogEncoded(request.referer.as_deref().unwrap_or("")),
+        LogEncoded(request.user_agent.as_deref().unwrap_or(""))
     );
     server
         .log_sink
