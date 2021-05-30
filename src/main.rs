@@ -630,7 +630,7 @@ struct Connection {
     client: IpAddr,
     last_active: SystemTime,
     state: ConnectionState,
-    request: Vec<u8>,
+    buffer: Vec<u8>,
     method: Option<String>,
     url: Option<String>,
     referer: Option<String>,
@@ -656,7 +656,7 @@ impl Connection {
             client,
             last_active: now,
             state: ConnectionState::ReceiveRequest,
-            request: Vec::new(),
+            buffer: Vec::new(),
             method: None,
             url: None,
             referer: None,
@@ -679,7 +679,7 @@ impl Connection {
     /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
     fn recycle(&mut self) {
         // don't reset conn.client
-        self.request = Vec::new();
+        self.buffer = Vec::new();
         self.method = None;
         self.url = None;
         self.referer = None;
@@ -982,22 +982,22 @@ impl<'a> std::fmt::Display for HtmlEscaped<'a> {
 fn parse_field(conn: &Connection, field: &str) -> Option<String> {
     // TODO: Header names should be case-insensitive.
     // TODO: Parse the request instead of naively searching for the header name.
-    let field_start_pod = match find(field.as_bytes(), &conn.request) {
+    let field_start_pod = match find(field.as_bytes(), &conn.buffer) {
         Some(field_start_pod) => field_start_pod,
         None => return None,
     };
 
     let value_start_pos = field_start_pod + field.as_bytes().len();
     let mut value_end_pos = 0;
-    for i in value_start_pos..conn.request.len() {
+    for i in value_start_pos..conn.buffer.len() {
         value_end_pos = i;
-        let c = conn.request[i];
+        let c = conn.buffer[i];
         if matches!(c, b'\r' | b'\n') {
             break;
         }
     }
 
-    let value = &conn.request[value_start_pos..value_end_pos];
+    let value = &conn.buffer[value_start_pos..value_end_pos];
     Some(String::from_utf8(value.to_vec()).unwrap())
 }
 
@@ -1473,7 +1473,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
 /// (if given) and the user-agent (if given). Remember to deallocate all these buffers. The method
 /// will be returned in uppercase.
 fn parse_request(server: &Server, conn: &mut Connection) -> bool {
-    let request = std::str::from_utf8(&conn.request).unwrap();
+    let request = std::str::from_utf8(&conn.buffer).unwrap();
     let mut lines = request.split(|c| matches!(c, '\r' | '\n'));
     let mut request_line = lines.next().unwrap().split(' ');
 
@@ -1549,7 +1549,7 @@ fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) 
     conn.state = ConnectionState::SendHeader;
 
     // request not needed anymore
-    conn.request = Vec::new();
+    conn.buffer = Vec::new();
 }
 
 /// Safe wrapper for `libc::sendfile64`.
@@ -1692,21 +1692,21 @@ fn poll_recv_request(
     .unwrap();
     conn.last_active = now;
 
-    // append to conn.request
+    // append to conn.buffer
     assert!(recvd > 0);
-    conn.request.extend(&buf[..recvd.try_into().unwrap()]);
+    conn.buffer.extend(&buf[..recvd.try_into().unwrap()]);
     stats.total_in += recvd;
 
     // die if it's too large, or process request if we have all of it
     // TODO: Handle HTTP pipelined requests
-    if conn.request.len() > MAX_REQUEST_LENGTH {
+    if conn.buffer.len() > MAX_REQUEST_LENGTH {
         let reason = "Your request was dropped because it was too long.";
         default_reply(server, conn, now, 413, "Request Entity Too Large", reason);
         conn.state = ConnectionState::SendHeader;
-    } else if (conn.request.len() >= 2
-        && &conn.request[conn.request.len() - 2..conn.request.len()] == b"\n\n")
-        || (conn.request.len() >= 4
-            && &conn.request[conn.request.len() - 4..conn.request.len()] == b"\r\n\r\n")
+    } else if (conn.buffer.len() >= 2
+        && &conn.buffer[conn.buffer.len() - 2..conn.buffer.len()] == b"\n\n")
+        || (conn.buffer.len() >= 4
+            && &conn.buffer[conn.buffer.len() - 4..conn.buffer.len()] == b"\r\n\r\n")
     {
         stats.num_requests += 1;
         process_request(server, conn, now);
