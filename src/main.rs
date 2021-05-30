@@ -114,6 +114,7 @@ fn main() -> Result<()> {
 
     let mut files_exhausted = false;
     let mut connections = Vec::new();
+    let mut stats = ServerStats::default();
 
     // main loop
     while is_running() {
@@ -121,6 +122,7 @@ fn main() -> Result<()> {
             &mut server,
             &listener,
             &mut files_exhausted,
+            &mut stats,
             &mut connections,
         );
     }
@@ -144,8 +146,8 @@ fn main() -> Result<()> {
             rusage.ru_stime.tv_sec,
             rusage.ru_stime.tv_usec / 10000,
         );
-        println!("Requests: {}", server.num_requests);
-        println!("Bytes: {} in, {} out", server.total_in, server.total_out);
+        println!("Requests: {}", stats.num_requests);
+        println!("Bytes: {} in, {} out", stats.total_in, stats.total_out);
     }
     Ok(())
 }
@@ -202,9 +204,6 @@ struct Server {
     want_no_server_id: bool,
     server_hdr: String,
     auth_key: Option<String>,
-    num_requests: u64,
-    total_in: u64,
-    total_out: u64,
     mime_map: MimeMap,
     drop_uid: Option<Uid>,
     drop_gid: Option<Gid>,
@@ -440,6 +439,13 @@ impl Server {
         println!("listening on: http://{}/", socket_addr);
         Ok(listener)
     }
+}
+
+#[derive(Debug, Default)]
+struct ServerStats {
+    num_requests: u64,
+    total_in: u64,
+    total_out: u64,
 }
 
 /// Safe wrapper for `libc::getrusage`.
@@ -1512,8 +1518,6 @@ fn parse_request(server: &Server, conn: &mut Connection) -> bool {
 
 /// Process a request: build the header and reply, advance state.
 fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) {
-    server.num_requests += 1;
-
     let result = parse_request(server, conn);
 
     if !result {
@@ -1557,7 +1561,7 @@ fn sendfile64(
 }
 
 /// Sending reply.
-fn poll_send_reply(server: &mut Server, conn: &mut Connection, now: SystemTime) {
+fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerStats) {
     assert!(conn.state == ConnectionState::SendReply);
     assert!(conn.reply_length >= conn.reply_sent);
 
@@ -1599,7 +1603,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection, now: SystemTime) 
     };
     conn.reply_sent += i64::try_from(sent).unwrap();
     conn.total_sent += i64::try_from(sent).unwrap();
-    server.total_out += u64::try_from(sent).unwrap();
+    stats.total_out += u64::try_from(sent).unwrap();
 
     // check if we're done sending
     if conn.reply_sent == conn.reply_length {
@@ -1608,7 +1612,7 @@ fn poll_send_reply(server: &mut Server, conn: &mut Connection, now: SystemTime) 
 }
 
 /// Sending header. Assumes conn->header is not NULL.
-fn poll_send_header(server: &mut Server, conn: &mut Connection, now: SystemTime) {
+fn poll_send_header(conn: &mut Connection, now: SystemTime, stats: &mut ServerStats) {
     assert_eq!(conn.state, ConnectionState::SendHeader);
 
     let header = conn.header.as_ref().unwrap().as_bytes();
@@ -1636,7 +1640,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection, now: SystemTime)
     assert!(sent > 0);
     conn.header_sent += sent;
     conn.total_sent += i64::try_from(sent).unwrap();
-    server.total_out += u64::try_from(sent).unwrap();
+    stats.total_out += u64::try_from(sent).unwrap();
 
     // check if we're done sending header
     if conn.header_sent == header.len() {
@@ -1645,7 +1649,7 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection, now: SystemTime)
         } else {
             conn.state = ConnectionState::SendReply;
             // go straight on to body, don't go through another iteration of the select() loop
-            poll_send_reply(server, conn, now);
+            poll_send_reply(conn, now, stats);
         }
     }
 }
@@ -1655,7 +1659,12 @@ fn poll_send_header(server: &mut Server, conn: &mut Connection, now: SystemTime)
 const MAX_REQUEST_LENGTH: usize = 4000;
 
 /// Receiving request.
-fn poll_recv_request(server: &mut Server, conn: &mut Connection, now: SystemTime) {
+fn poll_recv_request(
+    server: &mut Server,
+    conn: &mut Connection,
+    now: SystemTime,
+    stats: &mut ServerStats,
+) {
     assert_eq!(conn.state, ConnectionState::ReceiveRequest);
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
@@ -1680,7 +1689,7 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection, now: SystemTime
     // append to conn.request
     assert!(recvd > 0);
     conn.request.extend(&buf[..recvd.try_into().unwrap()]);
-    server.total_in += recvd;
+    stats.total_in += recvd;
 
     // die if it's too large, or process request if we have all of it
     // TODO: Handle HTTP pipelined requests
@@ -1693,13 +1702,14 @@ fn poll_recv_request(server: &mut Server, conn: &mut Connection, now: SystemTime
         || (conn.request.len() >= 4
             && &conn.request[conn.request.len() - 4..conn.request.len()] == b"\r\n\r\n")
     {
+        stats.num_requests += 1;
         process_request(server, conn, now);
     }
 
     // if we've moved on to the next state, try to send right away, instead of going through
     // another iteration of the select() loop.
     if conn.state == ConnectionState::SendHeader {
-        poll_send_header(server, conn, now);
+        poll_send_header(conn, now, stats);
     }
 }
 
@@ -1770,6 +1780,7 @@ fn accept_connection(
     listener: &TcpListener,
     files_exhausted: &mut bool,
     now: SystemTime,
+    stats: &mut ServerStats,
     connections: &mut Vec<Connection>,
 ) {
     let (stream, addr) = match listener.accept() {
@@ -1795,7 +1806,7 @@ fn accept_connection(
     let num_connections = connections.len();
 
     // Try to read straight away rather than going through another iteration of the select() loop.
-    poll_recv_request(server, &mut connections[num_connections - 1], now);
+    poll_recv_request(server, &mut connections[num_connections - 1], now, stats);
 }
 
 /// Main loop of the httpd - a select() and then delegation to accept connections, handle receiving
@@ -1804,6 +1815,7 @@ fn httpd_poll(
     server: &mut Server,
     listener: &TcpListener,
     files_exhausted: &mut bool,
+    stats: &mut ServerStats,
     connections: &mut Vec<Connection>,
 ) {
     let mut recv_set = FdSet::new();
@@ -1867,7 +1879,7 @@ fn httpd_poll(
 
     // poll connections that select() says need attention
     if recv_set.contains(listener.as_raw_fd()) {
-        accept_connection(server, listener, files_exhausted, now, connections);
+        accept_connection(server, listener, files_exhausted, now, stats, connections);
     }
     let mut index = 0;
     while index < connections.len() {
@@ -1878,17 +1890,17 @@ fn httpd_poll(
         match conn.state {
             ConnectionState::ReceiveRequest => {
                 if recv_set.contains(conn.socket.as_raw_fd()) {
-                    poll_recv_request(server, conn, now);
+                    poll_recv_request(server, conn, now, stats);
                 }
             }
             ConnectionState::SendHeader => {
                 if send_set.contains(conn.socket.as_raw_fd()) {
-                    poll_send_header(server, conn, now);
+                    poll_send_header(conn, now, stats);
                 }
             }
             ConnectionState::SendReply => {
                 if send_set.contains(conn.socket.as_raw_fd()) {
-                    poll_send_reply(server, conn, now);
+                    poll_send_reply(conn, now, stats);
                 }
             }
             ConnectionState::Done => {
@@ -1907,7 +1919,7 @@ fn httpd_poll(
             } else {
                 conn.recycle();
                 // and go right back to recv_request without going through select() again.
-                poll_recv_request(server, conn, now);
+                poll_recv_request(server, conn, now, stats);
                 index += 1;
             }
         } else {
