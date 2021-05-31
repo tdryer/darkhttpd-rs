@@ -1489,26 +1489,23 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
 
 /// Process a request and return corresponding response.
 fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) -> Response {
-    match Request::parse(&conn.buffer) {
-        Some(request) => {
-            // cmdline flag can be used to deny keep-alive
-            conn.conn_close = request.connection_close() || server.want_no_keepalive;
-            conn.request = Some(request);
-            if conn.request.as_ref().expect("missing request").method == "GET" {
-                process_get(server, conn, now)
-            } else if conn.request.as_ref().expect("missing request").method == "HEAD" {
-                let mut response = process_get(server, conn, now);
-                response.body = None;
-                response
-            } else {
-                let reason = "The method you specified is not implemented.";
-                default_reply(server, conn, now, 501, "Not Implemented", reason)
-            }
+    if let Some(request) = Request::parse(&conn.buffer) {
+        // cmdline flag can be used to deny keep-alive
+        conn.conn_close = request.connection_close() || server.want_no_keepalive;
+        conn.request = Some(request);
+        if conn.request.as_ref().expect("missing request").method == "GET" {
+            process_get(server, conn, now)
+        } else if conn.request.as_ref().expect("missing request").method == "HEAD" {
+            let mut response = process_get(server, conn, now);
+            response.body = None;
+            response
+        } else {
+            let reason = "The method you specified is not implemented.";
+            default_reply(server, conn, now, 501, "Not Implemented", reason)
         }
-        None => {
-            let reason = "You sent a request that the server couldn't understand.";
-            default_reply(server, conn, now, 400, "Bad Request", reason)
-        }
+    } else {
+        let reason = "You sent a request that the server couldn't understand.";
+        default_reply(server, conn, now, 400, "Bad Request", reason)
     }
 }
 
