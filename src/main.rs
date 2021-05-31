@@ -629,11 +629,8 @@ struct Request {
     method: String,
     url: String,
     headers: HashMap<String, String>,
-    conn_close: bool,
     // TODO: Replace these using header method
-    referer: Option<String>,
-    user_agent: Option<String>,
-    authorization: Option<String>,
+    conn_close: bool,
     range_begin: Option<i64>,
     range_end: Option<i64>,
 }
@@ -678,10 +675,6 @@ impl Request {
             }
         }
 
-        // parse important fields
-        let referer = headers.get("referer").map(|s| s.to_string());
-        let user_agent = headers.get("user-agent").map(|s| s.to_string());
-        let authorization = headers.get("authorization").map(|s| s.to_string());
         let (range_begin, range_end) = parse_range_field(conn);
 
         Some(Request {
@@ -689,9 +682,6 @@ impl Request {
             url,
             headers,
             conn_close,
-            referer,
-            user_agent,
-            authorization,
             range_begin,
             range_end,
         })
@@ -1546,7 +1536,7 @@ fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) 
                 .request
                 .as_ref()
                 .expect("missing request")
-                .authorization;
+                .header("authorization");
             if server.auth_key.is_some()
                 && (authorization.is_none()
                     || authorization.as_deref() != server.auth_key.as_deref())
@@ -1778,8 +1768,8 @@ fn log_connection(server: &mut Server, conn: &Connection, now: SystemTime) {
         LogEncoded(&request.url),
         conn.http_code,
         conn.total_sent,
-        LogEncoded(request.referer.as_deref().unwrap_or("")),
-        LogEncoded(request.user_agent.as_deref().unwrap_or(""))
+        LogEncoded(request.header("referer").unwrap_or("")),
+        LogEncoded(request.header("user-agent").unwrap_or(""))
     );
     server
         .log_sink
