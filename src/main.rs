@@ -636,9 +636,8 @@ struct Request {
 }
 impl Request {
     /// Parse an HTTP request.
-    // TODO: take buffer instead of Connection
-    fn parse(conn: &mut Connection) -> Option<Request> {
-        let request = std::str::from_utf8(&conn.buffer).unwrap();
+    fn parse(buffer: &[u8]) -> Option<Request> {
+        let request = std::str::from_utf8(buffer).ok()?;
         let mut lines = request.lines();
         let mut request_line = lines.next().unwrap().split(' ');
         let method = request_line.next()?.to_uppercase();
@@ -693,7 +692,7 @@ impl Request {
 
         (range_begin, range_end)
     }
-    fn close_connection(&self) -> bool {
+    fn connection_close(&self) -> bool {
         let mut conn_close = true;
         if let Some("HTTP/1.1") = self.protocol.as_deref() {
             conn_close = false;
@@ -1484,10 +1483,10 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
 
 /// Process a request: build the header and reply, advance state.
 fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) {
-    match Request::parse(conn) {
+    match Request::parse(&conn.buffer) {
         Some(request) => {
             // cmdline flag can be used to deny keep-alive
-            conn.conn_close = request.close_connection() || server.want_no_keepalive;
+            conn.conn_close = request.connection_close() || server.want_no_keepalive;
             conn.request = Some(request);
             let authorization = &conn
                 .request
