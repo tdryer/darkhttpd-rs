@@ -629,10 +629,8 @@ struct Request {
     method: String,
     url: String,
     headers: HashMap<String, String>,
-    // TODO: Replace these using header method
+    // TODO: Replace this using header method
     conn_close: bool,
-    range_begin: Option<i64>,
-    range_end: Option<i64>,
 }
 impl Request {
     /// Parse an HTTP request.
@@ -675,19 +673,42 @@ impl Request {
             }
         }
 
-        let (range_begin, range_end) = parse_range_field(conn);
-
         Some(Request {
             method,
             url,
             headers,
             conn_close,
-            range_begin,
-            range_end,
         })
     }
     fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(|s| s.as_str())
+    }
+    fn range(&self) -> (Option<i64>, Option<i64>) {
+        // get range header value and strip prefix
+        let prefix = "bytes=";
+        let range = match self.header("range") {
+            Some(range) if range.starts_with("bytes=") => &range[prefix.len()..],
+            _ => return (None, None),
+        };
+
+        // parse number up to hyphen
+        let (range_begin, remaining) = parse_offset(range.as_bytes());
+
+        // there must be a hyphen here
+        if remaining.is_empty() || remaining[0] != b'-' {
+            return (None, None);
+        }
+        let remaining = &remaining[1..];
+
+        // parse number after hyphen
+        let (range_end, remaining) = parse_offset(remaining);
+
+        // must be end of string or a list to be valid
+        if !remaining.is_empty() && remaining[0] != b',' {
+            return (None, None);
+        }
+
+        (range_begin, range_end)
     }
 }
 
@@ -1059,37 +1080,6 @@ fn find(needle: &[u8], haystack: &[u8]) -> Option<usize> {
     None
 }
 
-/// Parse a Range: field into range_begin and range_end. Only handles the first range if a list is
-/// given. Sets range_{begin,end}_given to 1 if either part of the range is given.
-fn parse_range_field(conn: &mut Connection) -> (Option<i64>, Option<i64>) {
-    let range = match parse_field(conn, "Range: bytes=") {
-        Some(range) => range,
-        None => return (None, None),
-    };
-
-    // Valid because parse_field returns CString::into_raw
-    let remaining = range.as_bytes();
-
-    // parse number up to hyphen
-    let (range_begin, remaining) = parse_offset(remaining);
-
-    // there must be a hyphen here
-    if remaining.is_empty() || remaining[0] != b'-' {
-        return (None, None);
-    }
-    let remaining = &remaining[1..];
-
-    // parse number after hyphen
-    let (range_end, remaining) = parse_offset(remaining);
-
-    // must be end of string or a list to be valid
-    if !remaining.is_empty() && remaining[0] != b',' {
-        return (None, None);
-    }
-
-    (range_begin, range_end)
-}
-
 fn parse_offset(data: &[u8]) -> (Option<i64>, &[u8]) {
     let mut digits_len = 0;
     while digits_len < data.len() && data[digits_len].is_ascii_digit() {
@@ -1321,9 +1311,8 @@ fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&
 }
 
 /// Return range based on header values and file length.
-fn get_range(conn: &Connection, file_len: i64) -> Option<(i64, i64)> {
-    let request = conn.request.as_ref().expect("missing request");
-    match (request.range_begin, request.range_end) {
+fn get_range(request_range: (Option<i64>, Option<i64>), file_len: i64) -> Option<(i64, i64)> {
+    match request_range {
         // eg. 100-200
         (Some(from), Some(to)) => Some((from, min(to, file_len - 1))),
         // eg. 100- :: yields 100 to end
@@ -1459,7 +1448,8 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
     }
 
     // handle Range
-    if let Some((from, to)) = get_range(&conn, metadata.len() as i64) {
+    let request_range = conn.request.as_ref().expect("missing request").range();
+    if let Some((from, to)) = get_range(request_range, metadata.len() as i64) {
         if from >= metadata.len() as i64 {
             let errname = "Requested Range Not Satisfiable";
             let reason = "You requested a range outside of the file.".to_string();
