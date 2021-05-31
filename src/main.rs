@@ -19,6 +19,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Local, Utc};
 use nix::errno::Errno;
 use nix::sys::select::{select, FdSet};
+use nix::sys::sendfile::sendfile64;
 use nix::sys::signal::{signal, SigHandler, Signal};
 use nix::sys::socket;
 use nix::sys::time::TimeVal;
@@ -1507,20 +1508,6 @@ fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) 
         let reason = "You sent a request that the server couldn't understand.";
         default_reply(server, conn, now, 400, "Bad Request", reason)
     }
-}
-
-/// Safe wrapper for `libc::sendfile64`.
-fn sendfile64(
-    out_fd: RawFd,
-    in_fd: RawFd,
-    offset: Option<&mut libc::off64_t>,
-    count: usize,
-) -> nix::Result<usize> {
-    let offset = offset
-        .map(|offset| offset as *mut _)
-        .unwrap_or(std::ptr::null_mut());
-    let ret = unsafe { libc::sendfile64(out_fd, in_fd, offset, count) };
-    Errno::result(ret).map(|r| r as usize)
 }
 
 /// Sending reply.
