@@ -628,9 +628,8 @@ impl<'a> std::fmt::Display for Base64Encoded<'a> {
 struct Request {
     method: String,
     url: String,
+    protocol: Option<String>,
     headers: HashMap<String, String>,
-    // TODO: Replace this using header method
-    conn_close: bool,
 }
 impl Request {
     /// Parse an HTTP request.
@@ -641,15 +640,7 @@ impl Request {
         let mut request_line = lines.next().unwrap().split(' ');
         let method = request_line.next()?.to_uppercase();
         let url = request_line.next()?.to_string();
-        let mut conn_close = true;
-
-        // parse protocol to determine conn.close
-        if let Some(protocol) = request_line.next() {
-            if protocol.to_uppercase() == "HTTP/1.1" {
-                conn_close = false;
-            }
-        }
-
+        let protocol = request_line.next().map(|s| s.to_uppercase());
         let mut headers = HashMap::new();
         for line in lines {
             if line.is_empty() {
@@ -662,22 +653,11 @@ impl Request {
                 headers.insert(name.to_lowercase(), value.to_string());
             }
         }
-
-        // parse connection header
-        if let Some(connection) = headers.get("connection").map(|s| s.as_str()) {
-            let connection = connection.to_lowercase();
-            if connection == "close" {
-                conn_close = true;
-            } else if connection == "keep-alive" {
-                conn_close = false;
-            }
-        }
-
         Some(Request {
             method,
             url,
+            protocol,
             headers,
-            conn_close,
         })
     }
     fn header(&self, name: &str) -> Option<&str> {
@@ -709,6 +689,19 @@ impl Request {
         }
 
         (range_begin, range_end)
+    }
+    fn close_connection(&self) -> bool {
+        let mut conn_close = true;
+        if let Some("HTTP/1.1") = self.protocol.as_deref() {
+            conn_close = false;
+        }
+        let connection = self.headers.get("connection").map(|s| s.to_lowercase());
+        match connection.as_deref() {
+            Some("close") => conn_close = true,
+            Some("keep-alive") => conn_close = false,
+            _ => {}
+        }
+        conn_close
     }
 }
 
@@ -1520,7 +1513,7 @@ fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) 
     match Request::parse(conn) {
         Some(request) => {
             // cmdline flag can be used to deny keep-alive
-            conn.conn_close = request.conn_close || server.want_no_keepalive;
+            conn.conn_close = request.close_connection() || server.want_no_keepalive;
             conn.request = Some(request);
             let authorization = &conn
                 .request
