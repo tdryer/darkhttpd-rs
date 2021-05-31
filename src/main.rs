@@ -2,7 +2,7 @@ use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::ffi::{CString, OsStr, OsString};
-use std::fs::{metadata, remove_file, File, OpenOptions};
+use std::fs::{remove_file, File, OpenOptions};
 use std::io::{BufRead, BufWriter, Read, Write};
 use std::mem::MaybeUninit;
 use std::net::{
@@ -1259,11 +1259,6 @@ fn generate_dir_listing(
     }
 }
 
-/// Return true if file exists.
-fn file_exists(path: &str) -> bool {
-    !matches!(metadata(path), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-}
-
 /// A not modified reply.
 fn not_modified(server: &Server, conn: &mut Connection, now: SystemTime) -> Response {
     let headers = format!(
@@ -1347,30 +1342,18 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         return redirect(server, conn, now, &redirect_url);
     }
 
-    let target; // path to the file we're going to return
-    let mimetype; // the mimetype for that file
-
-    // does it end in a slash? serve up url/index_name
+    // Find path to target file, and possibly a fallback to an index file.
+    let target;
+    let dir_listing_target;
     if decoded_url.ends_with('/') {
-        // does an index exist?
         target = format!("{}{}{}", server.wwwroot, decoded_url, server.index_name);
-        if !file_exists(&target) {
-            if server.no_listing {
-                // Return 404 instead of 403 to make --no-listing indistinguishable from the
-                // directory not existing. i.e.: Don't leak information.
-                let reason = "The URL you requested was not found.";
-                return default_reply(server, conn, now, 404, "Not Found", &reason);
-            }
-            // return directory listing
-            let target = format!("{}{}", server.wwwroot, decoded_url);
-            return generate_dir_listing(server, conn, now, &target, &decoded_url);
-        } else {
-            mimetype = server.mime_map.url_content_type(&server.index_name);
-        }
+        dir_listing_target = Some(format!("{}{}", server.wwwroot, decoded_url));
     } else {
         target = format!("{}{}", server.wwwroot, decoded_url);
-        mimetype = server.mime_map.url_content_type(&decoded_url);
+        dir_listing_target = None;
     }
+
+    let mimetype = server.mime_map.url_content_type(&target);
 
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -1379,6 +1362,13 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     {
         Ok(file) => file,
         Err(e) => {
+            if let Some(target) = dir_listing_target {
+                // If `--no-listing` is specified, always fall back to 404 to avoid leaking
+                // information.
+                if e.kind() == std::io::ErrorKind::NotFound && !server.no_listing {
+                    return generate_dir_listing(server, conn, now, &target, &decoded_url);
+                }
+            }
             let (errcode, errname, reason) = match e.kind() {
                 std::io::ErrorKind::PermissionDenied => (
                     403,
@@ -1409,6 +1399,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     };
 
     if metadata.is_dir() {
+        // TODO: Fix when URL contains query string
         let url = format!("{}/", conn.request.as_ref().expect("missing request").url);
         return redirect(server, conn, now, &url);
     } else if !metadata.is_file() {
@@ -1418,9 +1409,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     }
 
     let body = Some(Body::FromFile(file));
-    let lastmod = metadata
-        .modified()
-        .expect("modified not available this platform");
+    let lastmod = metadata.modified().expect("modified not available");
 
     // handle If-Modified-Since
     if let Some(if_mod_since) = conn
