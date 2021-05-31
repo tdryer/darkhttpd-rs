@@ -1306,18 +1306,10 @@ fn get_range(request_range: (Option<i64>, Option<i64>), file_len: i64) -> Option
 
 /// Process a GET/HEAD request.
 fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Response {
-    // TODO: Find a way to avoid having to repeatedly unwrap conn.request
+    let request = conn.request.as_ref().expect("missing request");
 
     // strip query params
-    let stripped_url = conn
-        .request
-        .as_ref()
-        .expect("missing request")
-        .url
-        .splitn(2, '?')
-        .next()
-        .unwrap()
-        .to_string();
+    let stripped_url = request.url.splitn(2, '?').next().unwrap().to_string();
 
     // work out path of file being requested
     let decoded_url = UrlDecoded(&stripped_url).to_string();
@@ -1332,11 +1324,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     };
 
     // test the host against web forward options
-    let host = conn
-        .request
-        .as_ref()
-        .expect("missing request")
-        .header("host");
+    let host = request.header("host");
     if let Some(forward_to_url) = get_forward_to_url(server, host) {
         let redirect_url = format!("{}{}", forward_to_url, decoded_url);
         return redirect(server, conn, now, &redirect_url);
@@ -1400,7 +1388,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
 
     if metadata.is_dir() {
         // TODO: Fix when URL contains query string
-        let url = format!("{}/", conn.request.as_ref().expect("missing request").url);
+        let url = format!("{}/", request.url);
         return redirect(server, conn, now, &url);
     } else if !metadata.is_file() {
         // TODO: Add test coverage
@@ -1412,19 +1400,14 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     let lastmod = metadata.modified().expect("modified not available");
 
     // handle If-Modified-Since
-    if let Some(if_mod_since) = conn
-        .request
-        .as_ref()
-        .expect("missing request")
-        .header("if-modified-since")
-    {
+    if let Some(if_mod_since) = request.header("if-modified-since") {
         if HttpDate(lastmod).to_string() == if_mod_since {
             return not_modified(server, conn, now);
         }
     }
 
     // handle Range
-    let request_range = conn.request.as_ref().expect("missing request").range();
+    let request_range = request.range();
     if let Some((from, to)) = get_range(request_range, metadata.len() as i64) {
         if from >= metadata.len() as i64 {
             let errname = "Requested Range Not Satisfiable";
