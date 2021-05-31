@@ -1035,44 +1035,6 @@ impl<'a> std::fmt::Display for HtmlEscaped<'a> {
     }
 }
 
-/// Parses a single HTTP request field.  Returns string from end of [field] to
-/// first \r, \n or end of request string.  Returns NULL if [field] can't be
-/// matched.
-///
-/// You need to remember to deallocate the result.
-/// example: parse_field(conn, "Referer: ");
-fn parse_field(conn: &Connection, field: &str) -> Option<String> {
-    // TODO: Header names should be case-insensitive.
-    // TODO: Parse the request instead of naively searching for the header name.
-    let field_start_pod = match find(field.as_bytes(), &conn.buffer) {
-        Some(field_start_pod) => field_start_pod,
-        None => return None,
-    };
-
-    let value_start_pos = field_start_pod + field.as_bytes().len();
-    let mut value_end_pos = 0;
-    for i in value_start_pos..conn.buffer.len() {
-        value_end_pos = i;
-        let c = conn.buffer[i];
-        if matches!(c, b'\r' | b'\n') {
-            break;
-        }
-    }
-
-    let value = &conn.buffer[value_start_pos..value_end_pos];
-    Some(String::from_utf8(value.to_vec()).unwrap())
-}
-
-/// Return index of first occurrence of `needle` in `haystack`.
-fn find(needle: &[u8], haystack: &[u8]) -> Option<usize> {
-    for i in 0..haystack.len() {
-        if haystack[i..].starts_with(needle) {
-            return Some(i);
-        }
-    }
-    None
-}
-
 fn parse_offset(data: &[u8]) -> (Option<i64>, &[u8]) {
     let mut digits_len = 0;
     while digits_len < data.len() && data[digits_len].is_ascii_digit() {
@@ -1293,10 +1255,9 @@ fn not_modified(server: &Server, conn: &mut Connection, now: SystemTime) {
 }
 
 /// Get URL to forward to based on host header, if any.
-fn get_forward_to_url<'a>(server: &'a Server, conn: &mut Connection) -> Option<&'a str> {
+fn get_forward_to_url<'a>(server: &'a Server, host: Option<&str>) -> Option<&'a str> {
     if !server.forward_map.is_empty() {
-        let host = parse_field(conn, "Host: ");
-        if let Some(target) = host.and_then(move |host| server.forward_map.get(&host)) {
+        if let Some(target) = host.and_then(|host| server.forward_map.get(host)) {
             return Some(target);
         }
     }
@@ -1318,7 +1279,7 @@ fn get_range(request_range: (Option<i64>, Option<i64>), file_len: i64) -> Option
 
 /// Process a GET/HEAD request.
 fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
-    // TODO: Propagate Request via arguments instead?
+    // TODO: Find a way to avoid having to repeatedly unwrap conn.request
 
     // strip query params
     let stripped_url = conn
@@ -1345,7 +1306,12 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
     };
 
     // test the host against web forward options
-    if let Some(forward_to_url) = get_forward_to_url(server, conn) {
+    let host = conn
+        .request
+        .as_ref()
+        .expect("missing request")
+        .header("host");
+    if let Some(forward_to_url) = get_forward_to_url(server, host) {
         let redirect_url = format!("{}{}", forward_to_url, decoded_url);
         redirect(server, conn, now, &redirect_url);
         return;
@@ -1433,7 +1399,12 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
         .expect("modified not available this platform");
 
     // handle If-Modified-Since
-    if let Some(if_mod_since) = parse_field(conn, "If-Modified-Since: ") {
+    if let Some(if_mod_since) = conn
+        .request
+        .as_ref()
+        .expect("missing request")
+        .header("if-modified-since")
+    {
         if HttpDate(lastmod).to_string() == if_mod_since {
             not_modified(server, conn, now);
             return;
