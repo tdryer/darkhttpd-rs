@@ -1308,6 +1308,12 @@ fn get_range(request_range: (Option<i64>, Option<i64>), file_len: i64) -> Option
 fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Response {
     let request = conn.request.as_ref().expect("missing request");
 
+    let authorization = request.header("authorization");
+    if server.auth_key.is_some() && (authorization != server.auth_key.as_deref()) {
+        let reason = "Access denied due to invalid credentials.";
+        return default_reply(server, conn, now, 401, "Unauthorized", reason);
+    }
+
     // strip query params
     let stripped_url = request.url.splitn(2, '?').next().unwrap().to_string();
 
@@ -1488,18 +1494,7 @@ fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) 
             // cmdline flag can be used to deny keep-alive
             conn.conn_close = request.connection_close() || server.want_no_keepalive;
             conn.request = Some(request);
-            let authorization = &conn
-                .request
-                .as_ref()
-                .expect("missing request")
-                .header("authorization");
-            if server.auth_key.is_some()
-                && (authorization.is_none()
-                    || authorization.as_deref() != server.auth_key.as_deref())
-            {
-                let reason = "Access denied due to invalid credentials.";
-                default_reply(server, conn, now, 401, "Unauthorized", reason)
-            } else if conn.request.as_ref().expect("missing request").method == "GET" {
+            if conn.request.as_ref().expect("missing request").method == "GET" {
                 process_get(server, conn, now)
             } else if conn.request.as_ref().expect("missing request").method == "HEAD" {
                 let mut response = process_get(server, conn, now);
