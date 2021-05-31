@@ -707,6 +707,14 @@ impl Request {
     }
 }
 
+struct Response {
+    http_code: u16,
+    headers: String,
+    body: Option<Body>,
+    reply_start: i64,
+    reply_length: i64,
+}
+
 struct Connection {
     socket: TcpStream,
     client: IpAddr,
@@ -714,13 +722,9 @@ struct Connection {
     state: ConnectionState,
     buffer: Vec<u8>,
     request: Option<Request>,
-    header: Option<String>,
+    response: Option<Response>,
     header_sent: usize,
-    http_code: u16,
     conn_close: bool,
-    body: Option<Body>,
-    reply_start: i64,
-    reply_length: i64,
     reply_sent: i64,
     total_sent: i64,
 }
@@ -734,13 +738,9 @@ impl Connection {
             state: ConnectionState::ReceiveRequest,
             buffer: Vec::new(),
             request: None,
-            header: None,
+            response: None,
             header_sent: 0,
-            http_code: 0,
             conn_close: true,
-            body: None,
-            reply_start: 0,
-            reply_length: 0,
             reply_sent: 0,
             total_sent: 0,
         }
@@ -751,13 +751,9 @@ impl Connection {
         // don't reset conn.client
         self.buffer = Vec::new();
         self.request = None;
-        self.header = None;
+        self.response = None;
         self.header_sent = 0;
-        self.http_code = 0;
         self.conn_close = true;
-        self.body = None;
-        self.reply_start = 0;
-        self.reply_length = 0;
         self.reply_sent = 0;
         self.total_sent = 0;
 
@@ -1057,7 +1053,7 @@ fn default_reply(
     errcode: u16,
     errname: &str,
     reason: &str,
-) {
+) -> Response {
     let reply = format!(
         "<html><head><title>{} {}</title></head><body>\n\
         <h1>{}</h1>\n\
@@ -1071,9 +1067,7 @@ fn default_reply(
         reason,
         GeneratedOn(server, now),
     );
-    conn.reply_length = reply.as_bytes().len() as i64;
-    conn.body = Some(Body::Generated(reply));
-
+    let reply_length = reply.as_bytes().len() as i64;
     let headers = format!(
         "HTTP/1.1 {} {}\r\n\
         Date: {}\r\n\
@@ -1089,20 +1083,24 @@ fn default_reply(
         HttpDate(now),
         server.server_hdr,
         server.keep_alive_header(conn.conn_close),
-        conn.reply_length,
+        reply_length,
         if server.auth_key.is_some() {
             "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
         } else {
             ""
         }
     );
-    conn.header = Some(headers);
-    conn.http_code = errcode;
-    conn.reply_start = 0; // Reset in case the request set a range.
+    Response {
+        http_code: errcode,
+        headers,
+        body: Some(Body::Generated(reply)),
+        reply_start: 0,
+        reply_length: reply_length,
+    }
 }
 
 /// A redirect reply.
-fn redirect(server: &Server, conn: &mut Connection, now: SystemTime, location: &str) {
+fn redirect(server: &Server, conn: &mut Connection, now: SystemTime, location: &str) -> Response {
     let reply = format!(
         "<html><head><title>301 Moved Permanently</title></head><body>\n\
         <h1>Moved Permanently</h1>\n\
@@ -1114,9 +1112,7 @@ fn redirect(server: &Server, conn: &mut Connection, now: SystemTime, location: &
         location,
         GeneratedOn(server, now),
     );
-    conn.reply_length = reply.as_bytes().len() as i64;
-    conn.body = Some(Body::Generated(reply));
-
+    let reply_length = reply.as_bytes().len() as i64;
     let headers = format!(
         "HTTP/1.1 301 Moved Permanently\r\n\
         Date: {}\r\n\
@@ -1130,10 +1126,15 @@ fn redirect(server: &Server, conn: &mut Connection, now: SystemTime, location: &
         server.server_hdr,
         location,
         server.keep_alive_header(conn.conn_close),
-        conn.reply_length,
+        reply_length,
     );
-    conn.header = Some(headers);
-    conn.http_code = 301;
+    Response {
+        http_code: 301,
+        headers,
+        body: Some(Body::Generated(reply)),
+        reply_start: 0,
+        reply_length: reply_length,
+    }
 }
 
 /// Directory listing.
@@ -1183,13 +1184,12 @@ fn generate_dir_listing(
     now: SystemTime,
     path: &str,
     decoded_url: &str,
-) {
+) -> Response {
     let mut entries: Vec<_> = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(e) => {
             let reason = format!("Couldn't list directory: {}", e);
-            default_reply(server, conn, now, 500, "Internal Server Error", &reason);
-            return;
+            return default_reply(server, conn, now, 500, "Internal Server Error", &reason);
         }
     }
     .filter_map(|entry| entry.ok())
@@ -1212,9 +1212,7 @@ fn generate_dir_listing(
         Listing(entries),
         GeneratedOn(server, now),
     );
-    conn.reply_length = reply.as_bytes().len() as i64;
-    conn.body = Some(Body::Generated(reply));
-
+    let reply_length = reply.as_bytes().len() as i64;
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
         Date: {}\r\n\
@@ -1227,10 +1225,15 @@ fn generate_dir_listing(
         HttpDate(now),
         server.server_hdr,
         server.keep_alive_header(conn.conn_close),
-        conn.reply_length,
+        reply_length,
     );
-    conn.header = Some(headers);
-    conn.http_code = 200;
+    Response {
+        http_code: 200,
+        headers,
+        body: Some(Body::Generated(reply)),
+        reply_start: 0,
+        reply_length: reply_length,
+    }
 }
 
 /// Return true if file exists.
@@ -1239,7 +1242,7 @@ fn file_exists(path: &str) -> bool {
 }
 
 /// A not modified reply.
-fn not_modified(server: &Server, conn: &mut Connection, now: SystemTime) {
+fn not_modified(server: &Server, conn: &mut Connection, now: SystemTime) -> Response {
     let headers = format!(
         "HTTP/1.1 304 Not Modified\r\n\
         Date: {}\r\n\
@@ -1251,9 +1254,13 @@ fn not_modified(server: &Server, conn: &mut Connection, now: SystemTime) {
         server.server_hdr,
         server.keep_alive_header(conn.conn_close),
     );
-    conn.header = Some(headers);
-    conn.http_code = 304;
-    conn.reply_length = 0;
+    Response {
+        http_code: 304,
+        headers,
+        body: None,
+        reply_start: 0,
+        reply_length: 0,
+    }
 }
 
 /// Get URL to forward to based on host header, if any.
@@ -1280,7 +1287,7 @@ fn get_range(request_range: (Option<i64>, Option<i64>), file_len: i64) -> Option
 }
 
 /// Process a GET/HEAD request.
-fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
+fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Response {
     // TODO: Find a way to avoid having to repeatedly unwrap conn.request
 
     // strip query params
@@ -1302,8 +1309,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
         Some(decoded_url) => decoded_url,
         None => {
             let reason = "You requested an invalid URL.".to_string();
-            default_reply(server, conn, now, 400, "Bad Request", &reason);
-            return;
+            return default_reply(server, conn, now, 400, "Bad Request", &reason);
         }
     };
 
@@ -1315,8 +1321,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
         .header("host");
     if let Some(forward_to_url) = get_forward_to_url(server, host) {
         let redirect_url = format!("{}{}", forward_to_url, decoded_url);
-        redirect(server, conn, now, &redirect_url);
-        return;
+        return redirect(server, conn, now, &redirect_url);
     }
 
     let target; // path to the file we're going to return
@@ -1331,13 +1336,11 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
                 // Return 404 instead of 403 to make --no-listing indistinguishable from the
                 // directory not existing. i.e.: Don't leak information.
                 let reason = "The URL you requested was not found.";
-                default_reply(server, conn, now, 404, "Not Found", &reason);
-                return;
+                return default_reply(server, conn, now, 404, "Not Found", &reason);
             }
             // return directory listing
             let target = format!("{}{}", server.wwwroot, decoded_url);
-            generate_dir_listing(server, conn, now, &target, &decoded_url);
-            return;
+            return generate_dir_listing(server, conn, now, &target, &decoded_url);
         } else {
             mimetype = server.mime_map.url_content_type(&server.index_name);
         }
@@ -1370,8 +1373,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
                     format!("The URL you requested cannot be returned: {}.", e),
                 ),
             };
-            default_reply(server, conn, now, errcode, errname, &reason);
-            return;
+            return default_reply(server, conn, now, errcode, errname, &reason);
         }
     };
 
@@ -1379,23 +1381,20 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
         Ok(metadata) => metadata,
         Err(e) => {
             let reason = format!("fstat() failed: {}.", e);
-            default_reply(server, conn, now, 500, "Internal Server Error", &reason);
-            return;
+            return default_reply(server, conn, now, 500, "Internal Server Error", &reason);
         }
     };
 
     if metadata.is_dir() {
         let url = format!("{}/", conn.request.as_ref().expect("missing request").url);
-        redirect(server, conn, now, &url);
-        return;
+        return redirect(server, conn, now, &url);
     } else if !metadata.is_file() {
         // TODO: Add test coverage
         let reason = "Not a regular file.";
-        default_reply(server, conn, now, 403, "Forbidden", &reason);
-        return;
+        return default_reply(server, conn, now, 403, "Forbidden", &reason);
     }
 
-    conn.body = Some(Body::FromFile(file));
+    let body = Some(Body::FromFile(file));
     let lastmod = metadata
         .modified()
         .expect("modified not available this platform");
@@ -1408,8 +1407,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
         .header("if-modified-since")
     {
         if HttpDate(lastmod).to_string() == if_mod_since {
-            not_modified(server, conn, now);
-            return;
+            return not_modified(server, conn, now);
         }
     }
 
@@ -1419,19 +1417,17 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
         if from >= metadata.len() as i64 {
             let errname = "Requested Range Not Satisfiable";
             let reason = "You requested a range outside of the file.".to_string();
-            default_reply(server, conn, now, 416, errname, &reason);
-            return;
+            return default_reply(server, conn, now, 416, errname, &reason);
         }
 
         if to < from {
             let errname = "Requested Range Not Satisfiable";
             let reason = "You requested a backward range.".to_string();
-            default_reply(server, conn, now, 416, errname, &reason);
-            return;
+            return default_reply(server, conn, now, 416, errname, &reason);
         }
 
-        conn.reply_start = from;
-        conn.reply_length = to - from + 1;
+        let reply_start = from;
+        let reply_length = to - from + 1;
         let headers = format!(
             "HTTP/1.1 206 Partial Content\r\n\
             Date: {}\r\n\
@@ -1446,19 +1442,23 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
             HttpDate(now),
             server.server_hdr,
             server.keep_alive_header(conn.conn_close),
-            conn.reply_length,
-            from,
+            reply_length,
+            reply_start,
             to,
             metadata.len(),
             mimetype,
             HttpDate(lastmod)
         );
-        conn.header = Some(headers);
-        conn.http_code = 206;
-        return;
+        return Response {
+            http_code: 206,
+            headers,
+            body,
+            reply_start,
+            reply_length,
+        };
     }
 
-    conn.reply_length = metadata.len().try_into().unwrap();
+    let reply_length = metadata.len().try_into().unwrap();
 
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -1473,16 +1473,21 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) {
         HttpDate(now),
         server.server_hdr,
         server.keep_alive_header(conn.conn_close),
-        conn.reply_length,
+        reply_length,
         mimetype,
         HttpDate(lastmod)
     );
-    conn.header = Some(headers);
-    conn.http_code = 200;
+    Response {
+        http_code: 200,
+        headers,
+        body,
+        reply_start: 0,
+        reply_length,
+    }
 }
 
-/// Process a request: build the header and reply, advance state.
-fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) {
+/// Process a request and return corresponding response.
+fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) -> Response {
     match Request::parse(&conn.buffer) {
         Some(request) => {
             // cmdline flag can be used to deny keep-alive
@@ -1498,28 +1503,23 @@ fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) 
                     || authorization.as_deref() != server.auth_key.as_deref())
             {
                 let reason = "Access denied due to invalid credentials.";
-                default_reply(server, conn, now, 401, "Unauthorized", reason);
+                default_reply(server, conn, now, 401, "Unauthorized", reason)
             } else if conn.request.as_ref().expect("missing request").method == "GET" {
-                process_get(server, conn, now);
+                process_get(server, conn, now)
             } else if conn.request.as_ref().expect("missing request").method == "HEAD" {
-                process_get(server, conn, now);
-                conn.body = None;
+                let mut response = process_get(server, conn, now);
+                response.body = None;
+                response
             } else {
                 let reason = "The method you specified is not implemented.";
-                default_reply(server, conn, now, 501, "Not Implemented", reason);
+                default_reply(server, conn, now, 501, "Not Implemented", reason)
             }
         }
         None => {
             let reason = "You sent a request that the server couldn't understand.";
-            default_reply(server, conn, now, 400, "Bad Request", reason);
+            default_reply(server, conn, now, 400, "Bad Request", reason)
         }
-    };
-
-    // advance state
-    conn.state = ConnectionState::SendHeader;
-
-    // request not needed anymore
-    conn.buffer = Vec::new();
+    }
 }
 
 /// Safe wrapper for `libc::sendfile64`.
@@ -1539,13 +1539,14 @@ fn sendfile64(
 /// Sending reply.
 fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerStats) {
     assert!(conn.state == ConnectionState::SendReply);
-    assert!(conn.reply_length >= conn.reply_sent);
+    let response = conn.response.as_mut().expect("missing response");
+    assert!(response.reply_length >= conn.reply_sent);
 
-    let offset = conn.reply_start + conn.reply_sent;
+    let offset = response.reply_start + conn.reply_sent;
     // `i64` may wider than `usize`, so saturate when casting.
-    let send_len = usize::try_from(conn.reply_length - conn.reply_sent).unwrap_or(usize::MAX);
+    let send_len = usize::try_from(response.reply_length - conn.reply_sent).unwrap_or(usize::MAX);
 
-    let sent = match conn.body.as_mut().expect("reply has no body") {
+    let sent = match response.body.as_mut().expect("reply has no body") {
         Body::Generated(reply) => {
             // It's not possible for a generated body to be larger than `usize`.
             let offset = usize::try_from(offset).unwrap();
@@ -1582,7 +1583,7 @@ fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerSta
     stats.total_out += u64::try_from(sent).unwrap();
 
     // check if we're done sending
-    if conn.reply_sent == conn.reply_length {
+    if conn.reply_sent == response.reply_length {
         conn.state = ConnectionState::Done;
     }
 }
@@ -1590,8 +1591,9 @@ fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerSta
 /// Sending header. Assumes conn->header is not NULL.
 fn poll_send_header(conn: &mut Connection, now: SystemTime, stats: &mut ServerStats) {
     assert_eq!(conn.state, ConnectionState::SendHeader);
+    let response = conn.response.as_ref().expect("missing response");
 
-    let header = conn.header.as_ref().unwrap().as_bytes();
+    let header = response.headers.as_bytes();
 
     conn.last_active = now;
 
@@ -1620,7 +1622,7 @@ fn poll_send_header(conn: &mut Connection, now: SystemTime, stats: &mut ServerSt
 
     // check if we're done sending header
     if conn.header_sent == header.len() {
-        if conn.body.is_none() {
+        if response.body.is_none() {
             conn.state = ConnectionState::Done;
         } else {
             conn.state = ConnectionState::SendReply;
@@ -1670,8 +1672,10 @@ fn poll_recv_request(
     // die if it's too large, or process request if we have all of it
     // TODO: Handle HTTP pipelined requests
     if conn.buffer.len() > MAX_REQUEST_LENGTH {
+        let errname = "Request Entity Too Large";
         let reason = "Your request was dropped because it was too long.";
-        default_reply(server, conn, now, 413, "Request Entity Too Large", reason);
+        conn.response = Some(default_reply(server, conn, now, 413, errname, reason));
+        conn.buffer = Vec::new(); // request not needed anymore
         conn.state = ConnectionState::SendHeader;
     } else if (conn.buffer.len() >= 2
         && &conn.buffer[conn.buffer.len() - 2..conn.buffer.len()] == b"\n\n")
@@ -1679,7 +1683,9 @@ fn poll_recv_request(
             && &conn.buffer[conn.buffer.len() - 4..conn.buffer.len()] == b"\r\n\r\n")
     {
         stats.num_requests += 1;
-        process_request(server, conn, now);
+        conn.response = Some(process_request(server, conn, now));
+        conn.buffer = Vec::new(); // request not needed anymore
+        conn.state = ConnectionState::SendHeader;
     }
 
     // if we've moved on to the next state, try to send right away, instead of going through
@@ -1722,7 +1728,10 @@ fn log_connection(server: &mut Server, conn: &Connection, now: SystemTime) {
         ClfDate(now),
         LogEncoded(&request.method),
         LogEncoded(&request.url),
-        conn.http_code,
+        conn.response
+            .as_ref()
+            .map(|response| response.http_code)
+            .unwrap_or(0),
         conn.total_sent,
         LogEncoded(request.header("referer").unwrap_or("")),
         LogEncoded(request.header("user-agent").unwrap_or(""))
