@@ -774,6 +774,29 @@ enum Body {
     Generated(String),
     FromFile(File),
 }
+impl Body {
+    /// Send `length` bytes of body starting from offset `offset`.
+    fn send(&self, stream: &TcpStream, offset: i64, length: usize) -> nix::Result<usize> {
+        match self {
+            Body::Generated(reply) => {
+                // It's not possible for a generated body to be larger than `usize`.
+                let offset = usize::try_from(offset).unwrap();
+                let buf = &reply.as_bytes()[offset..offset + length];
+                socket::send(stream.as_raw_fd(), buf, socket::MsgFlags::empty())
+            }
+            Body::FromFile(file) => {
+                let mut offset = offset;
+                let size = min(length, SENDFILE_SIZE_LIMIT); // Limit size per syscall.
+                sendfile64(
+                    stream.as_raw_fd(),
+                    file.as_raw_fd(),
+                    Some(&mut offset),
+                    size,
+                )
+            }
+        }
+    }
+}
 
 type ForwardMap = HashMap<String, String>;
 
@@ -1542,30 +1565,13 @@ fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerSta
     let response = conn.response.as_mut().expect("missing response");
     assert!(response.reply_length >= conn.reply_sent);
 
+    conn.last_active = now;
+
     let offset = response.reply_start + conn.reply_sent;
     // `i64` may wider than `usize`, so saturate when casting.
     let send_len = usize::try_from(response.reply_length - conn.reply_sent).unwrap_or(usize::MAX);
-
-    let sent = match response.body.as_mut().expect("reply has no body") {
-        Body::Generated(reply) => {
-            // It's not possible for a generated body to be larger than `usize`.
-            let offset = usize::try_from(offset).unwrap();
-            let buf = &reply.as_bytes()[offset..offset + send_len];
-            socket::send(conn.socket.as_raw_fd(), buf, socket::MsgFlags::empty())
-        }
-        Body::FromFile(file) => {
-            let mut offset = offset;
-            let size = min(send_len, SENDFILE_SIZE_LIMIT); // Limit size per syscall.
-            sendfile64(
-                conn.socket.as_raw_fd(),
-                file.as_raw_fd(),
-                Some(&mut offset),
-                size,
-            )
-        }
-    };
-    conn.last_active = now;
-    let sent = match sent {
+    let body = response.body.as_ref().expect("reply has no body");
+    let sent = match body.send(&conn.socket, offset, send_len) {
         Ok(sent) if sent > 0 => sent,
         Err(nix::Error::Sys(Errno::EAGAIN)) => {
             // would block
