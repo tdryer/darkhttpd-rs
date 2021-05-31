@@ -650,12 +650,9 @@ fn keepalive() {
     }
 }
 
-fn was_closed(stream: &mut TcpStream) -> bool {
-    let mut buf = [0; 1];
-    match stream.read_exact(&mut buf) {
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => true,
-        _ => false,
-    }
+fn is_closed(server: &Server, stream: &mut TcpStream) -> bool {
+    // Connection is closed if trying to send another connection fails.
+    server.send_stream(stream, Request::new("/")).is_err()
 }
 
 #[test]
@@ -666,19 +663,35 @@ fn keepalive_disabled() {
         .send_stream(&mut stream, Request::new("/").with_version("1.1"))
         .unwrap();
     assert_eq!(response.status(), "200 OK");
-    assert!(was_closed(&mut stream));
+    assert!(is_closed(&server, &mut stream));
 }
 
 #[test_case("1.0" ; "one point zero")]
 #[test_case("" ; "undefined" )]
 fn keepalive_bad_version(version: &'static str) {
-    let server = Server::with_args(&["--no-keepalive"]);
+    let server = Server::new();
     let mut stream = server.stream();
     let response = server
         .send_stream(&mut stream, Request::new("/").with_version(version))
         .unwrap();
     assert_eq!(response.status(), "200 OK");
-    assert!(was_closed(&mut stream));
+    assert!(is_closed(&server, &mut stream));
+}
+
+#[test]
+fn keepalive_connection_close() {
+    let server = Server::new();
+    let mut stream = server.stream();
+    let response = server
+        .send_stream(
+            &mut stream,
+            Request::new("/")
+                .with_version("1.1")
+                .with_header("Connection", "close"),
+        )
+        .unwrap();
+    assert_eq!(response.status(), "200 OK");
+    assert!(is_closed(&server, &mut stream));
 }
 
 #[test]
