@@ -624,14 +624,13 @@ impl<'a> std::fmt::Display for Base64Encoded<'a> {
     }
 }
 
-// TODO: take buffer instead of Connection
-// TODO: make parse_field a method
-// TODO: remove these fields from Connection
 /// An HTTP request.
 struct Request {
     method: String,
     url: String,
+    headers: HashMap<String, String>,
     conn_close: bool,
+    // TODO: Replace these using header method
     referer: Option<String>,
     user_agent: Option<String>,
     authorization: Option<String>,
@@ -640,9 +639,10 @@ struct Request {
 }
 impl Request {
     /// Parse an HTTP request.
+    // TODO: take buffer instead of Connection
     fn parse(conn: &mut Connection) -> Option<Request> {
         let request = std::str::from_utf8(&conn.buffer).unwrap();
-        let mut lines = request.split(|c| matches!(c, '\r' | '\n'));
+        let mut lines = request.lines();
         let mut request_line = lines.next().unwrap().split(' ');
         let method = request_line.next()?.to_uppercase();
         let url = request_line.next()?.to_string();
@@ -655,8 +655,21 @@ impl Request {
             }
         }
 
+        let mut headers = HashMap::new();
+        for line in lines {
+            if line.is_empty() {
+                break;
+            }
+            let mut header_line = line.splitn(2, ": ");
+            let name = header_line.next();
+            let value = header_line.next();
+            if let (Some(name), Some(value)) = (name, value) {
+                headers.insert(name.to_lowercase(), value.to_string());
+            }
+        }
+
         // parse connection header
-        if let Some(connection) = parse_field(conn, "Connection: ") {
+        if let Some(connection) = headers.get("connection").map(|s| s.as_str()) {
             let connection = connection.to_lowercase();
             if connection == "close" {
                 conn_close = true;
@@ -666,14 +679,15 @@ impl Request {
         }
 
         // parse important fields
-        let referer = parse_field(conn, "Referer: ");
-        let user_agent = parse_field(conn, "User-Agent: ");
-        let authorization = parse_field(conn, "Authorization: ");
+        let referer = headers.get("referer").map(|s| s.to_string());
+        let user_agent = headers.get("user-agent").map(|s| s.to_string());
+        let authorization = headers.get("authorization").map(|s| s.to_string());
         let (range_begin, range_end) = parse_range_field(conn);
 
         Some(Request {
             method,
             url,
+            headers,
             conn_close,
             referer,
             user_agent,
@@ -681,6 +695,9 @@ impl Request {
             range_begin,
             range_end,
         })
+    }
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).map(|s| s.as_str())
     }
 }
 
