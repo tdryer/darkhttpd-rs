@@ -1490,19 +1490,21 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
 
 /// Process a request and return corresponding response.
 fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) -> Response {
-    if let Some(request) = Request::parse(&conn.buffer) {
+    conn.request = Request::parse(&conn.buffer);
+    if let Some(request) = conn.request.as_ref() {
         // cmdline flag can be used to deny keep-alive
         conn.conn_close = request.connection_close() || server.want_no_keepalive;
-        conn.request = Some(request);
-        if conn.request.as_ref().expect("missing request").method == "GET" {
-            process_get(server, conn, now)
-        } else if conn.request.as_ref().expect("missing request").method == "HEAD" {
-            let mut response = process_get(server, conn, now);
-            response.body = None;
-            response
-        } else {
-            let reason = "The method you specified is not implemented.";
-            default_reply(server, conn, now, 501, "Not Implemented", reason)
+        match request.method.as_str() {
+            "GET" => process_get(server, conn, now),
+            "HEAD" => {
+                let mut response = process_get(server, conn, now);
+                response.body = None;
+                response
+            }
+            _ => {
+                let reason = "The method you specified is not implemented.";
+                default_reply(server, conn, now, 501, "Not Implemented", reason)
+            }
         }
     } else {
         let reason = "You sent a request that the server couldn't understand.";
