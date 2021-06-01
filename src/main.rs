@@ -1119,7 +1119,7 @@ fn default_reply(
         headers,
         body: Some(Body::Generated(reply)),
         reply_start: 0,
-        reply_length: reply_length,
+        reply_length,
     }
 }
 
@@ -1157,7 +1157,7 @@ fn redirect(server: &Server, conn: &mut Connection, now: SystemTime, location: &
         headers,
         body: Some(Body::Generated(reply)),
         reply_start: 0,
-        reply_length: reply_length,
+        reply_length,
     }
 }
 
@@ -1256,7 +1256,7 @@ fn generate_dir_listing(
         headers,
         body: Some(Body::Generated(reply)),
         reply_start: 0,
-        reply_length: reply_length,
+        reply_length,
     }
 }
 
