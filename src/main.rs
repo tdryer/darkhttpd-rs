@@ -997,31 +997,26 @@ impl<T: AsRef<[u8]>> std::fmt::Display for UrlEncoded<T> {
 }
 
 /// Decode URL by converting %XX (where XX are hexadecimal digits) to the character it represents.
-struct UrlDecoded<'a>(&'a str);
-
-impl<'a> std::fmt::Display for UrlDecoded<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let url = self.0.as_bytes();
-        let mut decoded = Vec::with_capacity(url.len());
-        let mut i = 0;
-        while i < url.len() {
-            let c = url[i];
-            assert!(c != 0);
-            if c == b'%'
-                && i + 2 < url.len()
-                && url[i + 1].is_ascii_hexdigit()
-                && url[i + 2].is_ascii_hexdigit()
-            {
-                decoded.push(hex_to_digit(url[i + 1]) * 16 + hex_to_digit(url[i + 2]));
-                i += 3;
-            } else {
-                decoded.push(c);
-                i += 1;
-            }
+fn url_decode<T: AsRef<[u8]>>(url: T) -> Vec<u8> {
+    let url = url.as_ref();
+    let mut decoded = Vec::with_capacity(url.len());
+    let mut i = 0;
+    while i < url.len() {
+        let c = url[i];
+        assert!(c != 0); // TODO: Handle embedded null byte?
+        if c == b'%'
+            && i + 2 < url.len()
+            && url[i + 1].is_ascii_hexdigit()
+            && url[i + 2].is_ascii_hexdigit()
+        {
+            decoded.push(hex_to_digit(url[i + 1]) * 16 + hex_to_digit(url[i + 2]));
+            i += 3;
+        } else {
+            decoded.push(c);
+            i += 1;
         }
-        // TODO: Handle data that is not valid UTF-8.
-        write!(f, "{}", String::from_utf8(decoded).unwrap())
     }
+    decoded
 }
 
 /// Convert hex digit to integer.
@@ -1316,8 +1311,9 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     let stripped_url = request.url.splitn(2, '?').next().unwrap().to_string();
 
     // work out path of file being requested
-    // TODO: Make this an OsString and handle non-UTF-8 paths without panicking.
-    let decoded_url = UrlDecoded(&stripped_url).to_string();
+    let decoded_url = url_decode(&stripped_url);
+    // TODO: Handle non-UTF-8 paths without panicking.
+    let decoded_url = String::from_utf8(decoded_url).unwrap();
 
     // Make sure URL is safe
     let decoded_url = match make_safe_url(&decoded_url) {

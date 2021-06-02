@@ -21,11 +21,11 @@ fn url_encoded_works() {
 
 #[test]
 fn url_decoded_works() {
-    assert_eq!(
-        UrlDecoded("escape%28this%29name%09").to_string(),
-        "escape(this)name\t"
-    );
-    assert_eq!(UrlDecoded("%F0%9F%A6%80").to_string(), "\u{1F980}");
+    assert_eq!(url_decode("escape%28this%29name%09"), b"escape(this)name\t");
+    assert_eq!(url_decode("edge%"), b"edge%");
+    assert_eq!(url_decode("edge%2"), b"edge%2");
+    assert_eq!(url_decode("edge%20"), b"edge ");
+    assert_eq!(url_decode("invalid%C3%28"), b"invalid\xc3\x28");
 }
 
 #[test]
