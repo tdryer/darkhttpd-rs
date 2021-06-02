@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::fs::{create_dir, File};
 use std::io;
 use std::io::{Read, Write};
@@ -81,25 +82,21 @@ impl Server {
     pub fn root(&self) -> &Path {
         self.root.path()
     }
-    pub fn create_dir(&self, name: &str) -> PathBuf {
+    pub fn create_dir<P: AsRef<Path>>(&self, name: P) -> PathBuf {
         let mut path = self.root().to_path_buf();
         path.push(name);
         create_dir(&path).expect("failed to create directory");
         path
     }
-    pub fn create_file(&self, name: &str) -> File {
+    pub fn create_file<P: AsRef<Path>>(&self, name: P) -> File {
         let mut path = self.root().to_path_buf();
-        path.push(name);
+        path.push(name.as_ref());
         File::create(path).expect("failed to create file")
     }
     pub fn stream(&self) -> TcpStream {
         TcpStream::connect(("localhost", self.port)).expect("failed to connect to darkhttpd")
     }
-    pub fn send_stream(
-        &self,
-        stream: &mut TcpStream,
-        request: Request,
-    ) -> io::Result<Response> {
+    pub fn send_stream(&self, stream: &mut TcpStream, request: Request) -> io::Result<Response> {
         // Set timeouts to prevent tests from hanging
         stream.set_read_timeout(Some(Duration::from_secs(1)))?;
         stream.set_write_timeout(Some(Duration::from_secs(1)))?;

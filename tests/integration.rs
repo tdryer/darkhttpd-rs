@@ -1,10 +1,12 @@
 use nix::sys::socket::{getsockopt, sockopt};
+use std::ffi::OsStr;
 use std::fs::File;
 use std::fs::{set_permissions, Permissions};
 use std::io;
 use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::net::TcpStream;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::io::AsRawFd;
 use std::thread::sleep;
@@ -115,6 +117,29 @@ fn no_listing() {
 fn listing() {
     test_listing(&[], true);
 }
+
+#[test]
+fn listing_non_utf8_filename() {
+    let server = Server::new();
+    server.create_file(OsStr::from_bytes(b"invalid\xc3\x28"));
+    let response = server.send(Request::new("/")).unwrap();
+    assert_eq!(response.status(), "200 OK");
+    // Path should be URL-encoded, name should contain Unicode replacement character.
+    assert!(response
+        .text()
+        .unwrap()
+        .contains("<a href=\"invalid%C3%28\">invalid\u{FFFD}(</a>"));
+}
+
+// TODO: Handle non-UTF-8 paths without panicking.
+// #[test]
+// fn get_non_utf8_filename() {
+//     let server = Server::new();
+//     let mut file = server.create_file(OsStr::from_bytes(b"invalid\xc3\x28"));
+//     writeln!(file, "hello").unwrap();
+//     let response = server.send(Request::new("/invalid%C3%28")).unwrap();
+//     assert_eq!(response.status(), "200 OK");
+// }
 
 fn test_auth(auth: Option<&str>, authorized: bool) {
     let args = &["--auth", "myuser:mypass"];

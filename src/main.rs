@@ -9,6 +9,7 @@ use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6,
     TcpListener, TcpStream,
 };
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use std::str::FromStr;
@@ -979,20 +980,16 @@ fn make_safe_url(url: &str) -> Option<String> {
     Some(String::from_utf8(url).unwrap())
 }
 
-/// Encode string to be an RFC3986-compliant URL part.
-struct UrlEncoded<'a>(&'a str);
+/// Encode data to be an RFC3986-compliant URL part.
+struct UrlEncoded<T: AsRef<[u8]>>(T);
 
-impl<'a> std::fmt::Display for UrlEncoded<'a> {
+impl<T: AsRef<[u8]>> std::fmt::Display for UrlEncoded<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for c in self.0.chars() {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | '~') {
-                write!(f, "{}", c)?;
+        for byte in self.0.as_ref() {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+                write!(f, "{}", std::char::from_u32(*byte as u32).unwrap())?;
             } else {
-                let mut buf = [0; 4];
-                c.encode_utf8(&mut buf);
-                for b in buf.iter().take(c.len_utf8()) {
-                    write!(f, "%{:02X}", b)?;
-                }
+                write!(f, "%{:02X}", byte)?;
             }
         }
         Ok(())
@@ -1022,7 +1019,7 @@ impl<'a> std::fmt::Display for UrlDecoded<'a> {
                 i += 1;
             }
         }
-        // TODO: Handle invalid UTF-8 sequences.
+        // TODO: Handle data that is not valid UTF-8.
         write!(f, "{}", String::from_utf8(decoded).unwrap())
     }
 }
@@ -1184,7 +1181,7 @@ impl std::fmt::Display for Listing {
             write!(
                 f,
                 "<a href=\"{}\">{}</a>",
-                UrlEncoded(&name.to_string_lossy()),
+                UrlEncoded(name.as_bytes()),
                 name.to_string_lossy()
             )?;
             if metadata.is_dir() {
@@ -1319,6 +1316,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     let stripped_url = request.url.splitn(2, '?').next().unwrap().to_string();
 
     // work out path of file being requested
+    // TODO: Make this an OsString and handle non-UTF-8 paths without panicking.
     let decoded_url = UrlDecoded(&stripped_url).to_string();
 
     // Make sure URL is safe
