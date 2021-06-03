@@ -1314,33 +1314,46 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         let reason = "You requested an invalid URL.".to_string();
         return default_reply(server, conn, now, 400, "Bad Request", &reason);
     }
-    // TODO: Handle non-UTF-8 paths without panicking.
-    let decoded_url = String::from_utf8(decoded_url).unwrap();
-
     // test the host against web forward options
     let host = request.header("host");
     if let Some(forward_to_url) = get_forward_to_url(server, host) {
-        let redirect_url = format!("{}{}", forward_to_url, decoded_url);
+        let redirect_url = format!(
+            "{}{}",
+            forward_to_url,
+            // TODO: Handle non-UTF-8 paths without panicking.
+            String::from_utf8(decoded_url).unwrap()
+        );
         return redirect(server, conn, now, &redirect_url);
     }
 
     // Find path to target file, and possibly a fallback to an index file.
-    let target;
-    let dir_listing_target;
-    if decoded_url.ends_with('/') {
-        target = format!("{}{}{}", server.wwwroot, decoded_url, server.index_name);
-        dir_listing_target = Some(format!("{}{}", server.wwwroot, decoded_url));
+    let mut target = Vec::new();
+    let mut dir_listing_target: Option<Vec<u8>> = None;
+    if decoded_url.ends_with(b"/") {
+        target.extend_from_slice(server.wwwroot.as_bytes());
+        target.extend_from_slice(decoded_url.as_slice());
+        target.extend_from_slice(server.index_name.as_bytes());
+        dir_listing_target = Some({
+            let mut target = Vec::new();
+            target.extend_from_slice(server.wwwroot.as_bytes());
+            target.extend_from_slice(decoded_url.as_slice());
+            target
+        });
+
     } else {
-        target = format!("{}{}", server.wwwroot, decoded_url);
-        dir_listing_target = None;
+        target.extend_from_slice(server.wwwroot.as_bytes());
+        target.extend_from_slice(decoded_url.as_slice());
     }
 
-    let mimetype = server.mime_map.url_content_type(&target);
+    let mimetype = server
+        .mime_map
+        // TODO: Handle non-UTF-8 paths.
+        .url_content_type(&String::from_utf8_lossy(&target).to_string());
 
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
-        .open(target)
+        .open(OsStr::from_bytes(&target))
     {
         Ok(file) => file,
         Err(e) => {
@@ -1348,7 +1361,14 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
                 // If `--no-listing` is specified, always fall back to 404 to avoid leaking
                 // information.
                 if e.kind() == std::io::ErrorKind::NotFound && !server.no_listing {
-                    return generate_dir_listing(server, conn, now, &target, &decoded_url);
+                    return generate_dir_listing(
+                        server,
+                        conn,
+                        now,
+                        // TODO: Handle non-UTF-8 paths without panicking.
+                        std::str::from_utf8(&target).unwrap(),
+                        std::str::from_utf8(&decoded_url).unwrap(),
+                    );
                 }
             }
             let (errcode, errname, reason) = match e.kind() {

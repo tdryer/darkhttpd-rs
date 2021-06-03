@@ -132,14 +132,14 @@ fn listing_non_utf8_filename() {
 }
 
 // TODO: Handle non-UTF-8 paths without panicking.
-// #[test]
-// fn get_non_utf8_filename() {
-//     let server = Server::new();
-//     let mut file = server.create_file(OsStr::from_bytes(b"invalid\xc3\x28"));
-//     writeln!(file, "hello").unwrap();
-//     let response = server.send(Request::new("/invalid%C3%28")).unwrap();
-//     assert_eq!(response.status(), "200 OK");
-// }
+#[test]
+fn get_non_utf8_filename() {
+    let server = Server::new();
+    let mut file = server.create_file(OsStr::from_bytes(b"invalid\xc3\x28"));
+    writeln!(file, "hello").unwrap();
+    let response = server.send(Request::new("/invalid%C3%28")).unwrap();
+    assert_eq!(response.status(), "200 OK");
+}
 
 fn test_auth(auth: Option<&str>, authorized: bool) {
     let args = &["--auth", "myuser:mypass"];
