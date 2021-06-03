@@ -90,6 +90,10 @@ fn make_safe_url_works() {
         ("//a///b////c/////", Some("/a/b/c/")),
     ];
     for (url, expected) in test_cases {
-        assert_eq!(make_safe_url(url), expected.map(|s| s.to_string()));
+        let mut url = url.as_bytes().to_vec();
+        assert_eq!(make_safe_url(&mut url).is_ok(), expected.is_some());
+        if let Some(expected) = expected {
+            assert_eq!(url, expected.as_bytes());
+        }
     }
 }

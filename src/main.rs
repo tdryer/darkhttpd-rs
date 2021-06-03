@@ -16,7 +16,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Local, Utc};
 use nix::errno::Errno;
 use nix::sys::select::{select, FdSet};
@@ -927,14 +927,10 @@ impl<'a> std::fmt::Display for GeneratedOn<'a> {
 
 /// Resolve //, /./, and /../ in a URL.
 ///
-/// Returns None if the URL is invalid/unsafe.
-fn make_safe_url(url: &str) -> Option<String> {
-    // TODO: Make this work in-place again?
-    let mut url = url.as_bytes().to_vec();
-
-    // URLs not starting with a slash are illegal.
+/// Returns Error if the URL is invalid/unsafe.
+fn make_safe_url(url: &mut Vec<u8>) -> Result<()> {
     if !url.starts_with(&[b'/']) {
-        return None;
+        bail!("url does not start with slash");
     }
 
     let mut src_index = 0;
@@ -959,7 +955,7 @@ fn make_safe_url(url: &str) -> Option<String> {
             // overwrite previous component
             loop {
                 if dst_index == 0 {
-                    return None;
+                    bail!("url ascends above root");
                 }
                 dst_index -= 1;
                 if url[dst_index] == b'/' {
@@ -977,7 +973,7 @@ fn make_safe_url(url: &str) -> Option<String> {
     dst_index = max(dst_index, 1);
     url.truncate(dst_index);
 
-    Some(String::from_utf8(url).unwrap())
+    Ok(())
 }
 
 /// Encode data to be an RFC3986-compliant URL part.
@@ -1311,18 +1307,15 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     let stripped_url = request.url.splitn(2, '?').next().unwrap().to_string();
 
     // work out path of file being requested
-    let decoded_url = url_decode(&stripped_url);
-    // TODO: Handle non-UTF-8 paths without panicking.
-    let decoded_url = String::from_utf8(decoded_url).unwrap();
+    let mut decoded_url = url_decode(&stripped_url);
 
     // Make sure URL is safe
-    let decoded_url = match make_safe_url(&decoded_url) {
-        Some(decoded_url) => decoded_url,
-        None => {
-            let reason = "You requested an invalid URL.".to_string();
-            return default_reply(server, conn, now, 400, "Bad Request", &reason);
-        }
-    };
+    if let Err(_) = make_safe_url(&mut decoded_url) {
+        let reason = "You requested an invalid URL.".to_string();
+        return default_reply(server, conn, now, 400, "Bad Request", &reason);
+    }
+    // TODO: Handle non-UTF-8 paths without panicking.
+    let decoded_url = String::from_utf8(decoded_url).unwrap();
 
     // test the host against web forward options
     let host = request.header("host");
