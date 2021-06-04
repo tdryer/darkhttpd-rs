@@ -12,7 +12,7 @@ use std::net::{
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
@@ -829,7 +829,7 @@ const DEFAULT_EXTENSIONS_MAP: &[&str] = &[
 
 #[derive(Debug)]
 struct MimeMap {
-    mimetypes: HashMap<String, String>,
+    mimetypes: HashMap<OsString, String>,
     default_mimetype: String,
 }
 
@@ -859,15 +859,13 @@ impl MimeMap {
             return; // comment
         }
         for extension in fields {
-            self.mimetypes
-                .insert(extension.to_string(), mimetype.to_string());
+            self.mimetypes.insert(extension.into(), mimetype.into());
         }
     }
 
     /// Get content type for a URL.
-    fn url_content_type(&self, url: &str) -> &str {
-        url.rsplit('.')
-            .next()
+    fn content_type(&self, path: &Path) -> &str {
+        path.extension()
             .and_then(|extension| self.mimetypes.get(extension))
             .unwrap_or(&self.default_mimetype)
     }
@@ -1339,12 +1337,9 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         target.extend_from_slice(decoded_url.as_slice());
     }
 
-    let mimetype = server
-        .mime_map
-        // TODO: Handle non-UTF-8 paths.
-        .url_content_type(&String::from_utf8_lossy(&target).to_string());
-
     let mut target = PathBuf::from(OsString::from_vec(target));
+
+    let mimetype = server.mime_map.content_type(&target);
 
     let file = match std::fs::OpenOptions::new()
         .read(true)
