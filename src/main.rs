@@ -9,9 +9,10 @@ use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6,
     TcpListener, TcpStream,
 };
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
@@ -1327,19 +1328,12 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     }
 
     // Find path to target file, and possibly a fallback to an index file.
+    let is_directory = decoded_url.ends_with(b"/");
     let mut target = Vec::new();
-    let mut dir_listing_target: Option<Vec<u8>> = None;
-    if decoded_url.ends_with(b"/") {
+    if is_directory {
         target.extend_from_slice(server.wwwroot.as_bytes());
         target.extend_from_slice(decoded_url.as_slice());
         target.extend_from_slice(server.index_name.as_bytes());
-        dir_listing_target = Some({
-            let mut target = Vec::new();
-            target.extend_from_slice(server.wwwroot.as_bytes());
-            target.extend_from_slice(decoded_url.as_slice());
-            target
-        });
-
     } else {
         target.extend_from_slice(server.wwwroot.as_bytes());
         target.extend_from_slice(decoded_url.as_slice());
@@ -1350,26 +1344,27 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         // TODO: Handle non-UTF-8 paths.
         .url_content_type(&String::from_utf8_lossy(&target).to_string());
 
+    let mut target = PathBuf::from(OsString::from_vec(target));
+
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
-        .open(OsStr::from_bytes(&target))
+        .open(&target)
     {
         Ok(file) => file,
         Err(e) => {
-            if let Some(target) = dir_listing_target {
-                // If `--no-listing` is specified, always fall back to 404 to avoid leaking
-                // information.
-                if e.kind() == std::io::ErrorKind::NotFound && !server.no_listing {
-                    return generate_dir_listing(
-                        server,
-                        conn,
-                        now,
-                        // TODO: Handle non-UTF-8 paths without panicking.
-                        std::str::from_utf8(&target).unwrap(),
-                        std::str::from_utf8(&decoded_url).unwrap(),
-                    );
-                }
+            // If `--no-listing` is specified, always fall back to 404 to avoid leaking whether the
+            // directory exists.
+            if is_directory && e.kind() == std::io::ErrorKind::NotFound && !server.no_listing {
+                target.pop();
+                return generate_dir_listing(
+                    server,
+                    conn,
+                    now,
+                    // TODO: Handle non-UTF-8 paths without panicking.
+                    &target.display().to_string(),
+                    std::str::from_utf8(&decoded_url).unwrap(),
+                );
             }
             let (errcode, errname, reason) = match e.kind() {
                 std::io::ErrorKind::PermissionDenied => (
