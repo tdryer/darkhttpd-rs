@@ -9,7 +9,7 @@ use std::net::{
     AddrParseError, IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6,
     TcpListener, TcpStream,
 };
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 use std::path::{Path, PathBuf};
@@ -1325,21 +1325,14 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         return redirect(server, conn, now, &redirect_url);
     }
 
-    // Find path to target file, and possibly a fallback to an index file.
+    // Build path to target file
     let is_directory = decoded_url.ends_with(b"/");
-    let mut target = Vec::new();
+    let mut target = PathBuf::new();
+    target.push(OsStr::new(&server.wwwroot));
+    target.push(OsStr::from_bytes(&decoded_url[1..])); // leading slash removed
     if is_directory {
-        target.extend_from_slice(server.wwwroot.as_bytes());
-        target.extend_from_slice(decoded_url.as_slice());
-        target.extend_from_slice(server.index_name.as_bytes());
-    } else {
-        target.extend_from_slice(server.wwwroot.as_bytes());
-        target.extend_from_slice(decoded_url.as_slice());
+        target.push(OsStr::new(&server.index_name));
     }
-
-    let mut target = PathBuf::from(OsString::from_vec(target));
-
-    let mimetype = server.mime_map.content_type(&target);
 
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -1409,6 +1402,8 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
             return not_modified(server, conn, now);
         }
     }
+
+    let mimetype = server.mime_map.content_type(&target);
 
     // handle Range
     let request_range = request.range();
