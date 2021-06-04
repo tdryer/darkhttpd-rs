@@ -124,14 +124,25 @@ fn listing_non_utf8_filename() {
     server.create_file(OsStr::from_bytes(b"invalid\xc3\x28"));
     let response = server.send(Request::new("/")).unwrap();
     assert_eq!(response.status(), "200 OK");
+    let text = response.text().unwrap();
     // Path should be URL-encoded, name should contain Unicode replacement character.
-    assert!(response
-        .text()
-        .unwrap()
-        .contains("<a href=\"invalid%C3%28\">invalid\u{FFFD}(</a>"));
+    assert!(text.contains("<a href=\"invalid%C3%28\">invalid\u{FFFD}(</a>"));
 }
 
-// TODO: Handle non-UTF-8 paths without panicking.
+#[test]
+fn listing_non_utf8_directory() {
+    let server = Server::new();
+    server.create_dir(OsStr::from_bytes(b"invalid\xc3\x28"));
+    server.create_file(OsStr::from_bytes(b"invalid\xc3\x28/foo"));
+    let response = server.send(Request::new("/invalid%C3%28/")).unwrap();
+    assert_eq!(response.status(), "200 OK");
+    let text = response.text().unwrap();
+    // Directory name should be URL-encoded and contain Unicode replacement character.
+    assert!(text.contains("<h1>/invalid\u{FFFD}(/</h1>"));
+    // Listing should contain the file.
+    assert!(text.contains("<a href=\"foo\">foo</a>"));
+}
+
 #[test]
 fn get_non_utf8_filename() {
     let server = Server::new();

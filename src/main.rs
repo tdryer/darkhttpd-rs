@@ -1193,8 +1193,8 @@ fn generate_dir_listing(
     server: &Server,
     conn: &mut Connection,
     now: SystemTime,
-    path: &str,
-    decoded_url: &str,
+    path: &Path,
+    decoded_url: &[u8],
 ) -> Response {
     let mut entries: Vec<_> = match std::fs::read_dir(path) {
         Ok(entries) => entries,
@@ -1209,6 +1209,7 @@ fn generate_dir_listing(
         .as_mut_slice()
         .sort_by_key(|dir_entry| dir_entry.file_name());
 
+    let decoded_url = String::from_utf8_lossy(decoded_url);
     let reply = format!(
         "<html>\n<head>\n<title>{}</title>\n\
         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
@@ -1218,8 +1219,8 @@ fn generate_dir_listing(
         <hr>\n\
         {}\
         </body>\n</html>\n",
-        HtmlEscaped(decoded_url),
-        HtmlEscaped(decoded_url),
+        HtmlEscaped(&decoded_url),
+        HtmlEscaped(&decoded_url),
         Listing(entries),
         GeneratedOn(server, now),
     );
@@ -1345,14 +1346,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
             // directory exists.
             if is_directory && e.kind() == std::io::ErrorKind::NotFound && !server.no_listing {
                 target.pop();
-                return generate_dir_listing(
-                    server,
-                    conn,
-                    now,
-                    // TODO: Handle non-UTF-8 paths without panicking.
-                    &target.display().to_string(),
-                    std::str::from_utf8(&decoded_url).unwrap(),
-                );
+                return generate_dir_listing(server, conn, now, &target, &decoded_url);
             }
             let (errcode, errname, reason) = match e.kind() {
                 std::io::ErrorKind::PermissionDenied => (
