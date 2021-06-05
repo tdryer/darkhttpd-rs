@@ -1303,6 +1303,13 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         return default_reply(server, conn, now, 401, "Unauthorized", reason);
     }
 
+    // test the host against web forward options
+    let host = request.header("host");
+    if let Some(forward_to_url) = get_forward_to_url(server, host) {
+        let redirect_url = format!("{}{}", forward_to_url, request.url,);
+        return redirect(server, conn, now, &redirect_url);
+    }
+
     // strip query params
     let stripped_url = request.url.splitn(2, '?').next().unwrap().to_string();
 
@@ -1313,17 +1320,6 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     if let Err(_) = make_safe_url(&mut decoded_url) {
         let reason = "You requested an invalid URL.".to_string();
         return default_reply(server, conn, now, 400, "Bad Request", &reason);
-    }
-    // test the host against web forward options
-    let host = request.header("host");
-    if let Some(forward_to_url) = get_forward_to_url(server, host) {
-        let redirect_url = format!(
-            "{}{}",
-            forward_to_url,
-            // TODO: Handle non-UTF-8 paths without panicking.
-            String::from_utf8(decoded_url).unwrap()
-        );
-        return redirect(server, conn, now, &redirect_url);
     }
 
     // Build path to target file

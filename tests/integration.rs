@@ -52,6 +52,26 @@ fn forward_relative() {
     );
 }
 
+#[test]
+fn forward_non_utf_8() {
+    test_forward(
+        FORWARD_ARGS,
+        "/invalid%C3%28",
+        "example.com",
+        "http://www.example.com/invalid%C3%28",
+    );
+}
+
+#[test]
+fn forward_query_params() {
+    test_forward(
+        FORWARD_ARGS,
+        "/foo?bar=baz",
+        "example.com",
+        "http://www.example.com/foo?bar=baz",
+    );
+}
+
 const FORWARD_ALL_ARGS: &[&str] = &[
     "--forward",
     "example.com",
