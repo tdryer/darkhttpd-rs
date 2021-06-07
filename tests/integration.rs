@@ -315,6 +315,15 @@ fn dir_redirect() {
     assert_eq!(response.header("Location"), Some("/mydir/"));
 }
 
+#[test]
+fn dir_redirect_with_query() {
+    let server = Server::new();
+    server.create_dir("mydir");
+    let response = server.send(Request::new("/mydir?foo=bar")).unwrap();
+    assert_eq!(response.status(), "301 Moved Permanently");
+    assert_eq!(response.header("Location"), Some("/mydir/"));
+}
+
 fn get_random_data(len: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.resize(len, 0);
@@ -358,7 +367,7 @@ fn percent_encode(input: &str) -> String {
 
 #[test]
 fn file_get_urldecode() {
-    test_file_get(&percent_encode("/data.jpeg"));
+    test_file_get(&format!("/{}", percent_encode("data.jpeg")));
 }
 
 #[test]

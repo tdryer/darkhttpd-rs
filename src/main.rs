@@ -630,10 +630,33 @@ impl<'a> std::fmt::Display for Base64Encoded<'a> {
     }
 }
 
+/// A request target. See RFC7230 section 5.3.
+struct RequestTarget {
+    path: String,
+    query: String,
+}
+impl RequestTarget {
+    fn parse(buffer: &str) -> Option<RequestTarget> {
+        let mut target = buffer.splitn(2, '?');
+        let path = target.next()?.to_string();
+        let query = target.next().unwrap_or("").to_string();
+        Some(RequestTarget { path, query })
+    }
+}
+impl std::fmt::Display for RequestTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path)?;
+        if !self.query.is_empty() {
+            write!(f, "?{}", self.query)?;
+        }
+        Ok(())
+    }
+}
+
 /// An HTTP request.
 struct Request {
     method: String,
-    url: String,
+    target: RequestTarget,
     protocol: Option<String>,
     headers: HashMap<String, String>,
 }
@@ -644,7 +667,7 @@ impl Request {
         let mut lines = request.lines();
         let mut request_line = lines.next().unwrap().split(' ');
         let method = request_line.next()?.to_uppercase();
-        let url = request_line.next()?.to_string();
+        let target = RequestTarget::parse(request_line.next()?)?;
         let protocol = request_line.next().map(|s| s.to_uppercase());
         let mut headers = HashMap::new();
         for line in lines {
@@ -660,7 +683,7 @@ impl Request {
         }
         Some(Request {
             method,
-            url,
+            target,
             protocol,
             headers,
         })
@@ -1306,15 +1329,12 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     // test the host against web forward options
     let host = request.header("host");
     if let Some(forward_to_url) = get_forward_to_url(server, host) {
-        let redirect_url = format!("{}{}", forward_to_url, request.url,);
+        let redirect_url = format!("{}{}", forward_to_url, request.target);
         return redirect(server, conn, now, &redirect_url);
     }
 
-    // strip query params
-    let stripped_url = request.url.splitn(2, '?').next().unwrap().to_string();
-
     // work out path of file being requested
-    let mut decoded_url = url_decode(&stripped_url);
+    let mut decoded_url = url_decode(&request.target.path);
 
     // Make sure URL is safe
     if let Err(_) = make_safe_url(&mut decoded_url) {
@@ -1374,8 +1394,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     };
 
     if metadata.is_dir() {
-        // TODO: Fix when URL contains query string
-        let url = format!("{}/", request.url);
+        let url = format!("{}/", request.target.path);
         return redirect(server, conn, now, &url);
     } else if !metadata.is_file() {
         // TODO: Add test coverage
@@ -1668,7 +1687,7 @@ fn log_connection(server: &mut Server, conn: &Connection, now: SystemTime) {
         conn.client,
         ClfDate(now),
         LogEncoded(&request.method),
-        LogEncoded(&request.url),
+        LogEncoded(&request.target.to_string()),
         conn.response
             .as_ref()
             .map(|response| response.http_code)
