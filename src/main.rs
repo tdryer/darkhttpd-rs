@@ -639,6 +639,9 @@ impl RequestTarget {
     fn parse(buffer: &str) -> Option<RequestTarget> {
         let mut target = buffer.splitn(2, '?');
         let path = target.next()?.to_string();
+        if !path.starts_with("/") {
+            return None;
+        }
         let query = target.next().unwrap_or("").to_string();
         Some(RequestTarget { path, query })
     }
@@ -951,10 +954,7 @@ impl<'a> std::fmt::Display for GeneratedOn<'a> {
 ///
 /// Returns Error if the URL is invalid/unsafe.
 fn make_safe_url(url: &mut Vec<u8>) -> Result<()> {
-    if !url.starts_with(&[b'/']) {
-        bail!("url does not start with slash");
-    }
-
+    assert!(url.starts_with(b"/"));
     let mut src_index = 0;
     let mut dst_index = 0;
     while src_index < url.len() {

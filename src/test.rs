@@ -65,7 +65,6 @@ fn http_date_works() {
 #[test]
 fn make_safe_url_works() {
     let test_cases = &[
-        ("", None),
         ("/", Some("/")),
         ("/.", Some("/")),
         ("/./", Some("/")),
