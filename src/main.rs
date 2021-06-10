@@ -87,11 +87,19 @@ fn main() -> Result<()> {
         // Force reading the local timezone before chroot makes this impossible.
         Local::now();
 
-        chdir(server.wwwroot.as_str())
-            .with_context(|| format!("failed to change working directory to {}", server.wwwroot))?;
-        chroot(server.wwwroot.as_str())
-            .with_context(|| format!("failed to change root directory to {}", server.wwwroot))?;
-        println!("chrooted to `{}'", &server.wwwroot);
+        chdir(server.wwwroot.as_os_str()).with_context(|| {
+            format!(
+                "failed to change working directory to {}",
+                server.wwwroot.to_string_lossy()
+            )
+        })?;
+        chroot(server.wwwroot.as_os_str()).with_context(|| {
+            format!(
+                "failed to change root directory to {}",
+                server.wwwroot.to_string_lossy()
+            )
+        })?;
+        println!("chrooted to `{}'", server.wwwroot.to_string_lossy());
 
         server.wwwroot.clear();
     }
@@ -180,6 +188,14 @@ impl Default for LogSink {
     }
 }
 
+fn expect_string_after(args: &mut std::env::ArgsOs, arg_name: &str) -> Result<String> {
+    Ok(args
+        .next()
+        .with_context(|| format!("missing argument after {}", arg_name))?
+        .into_string()
+        .map_err(|_| anyhow!("UTF-8 required after {}", arg_name))?)
+}
+
 #[derive(Debug, Default)]
 struct Server {
     forward_map: ForwardMap,
@@ -188,12 +204,12 @@ struct Server {
     bindaddr: Option<String>,
     bindport: u16,
     max_connections: Option<usize>,
-    index_name: String,
+    index_name: OsString,
     no_listing: bool,
     inet6: bool,
-    wwwroot: String,
+    wwwroot: OsString,
     log_sink: LogSink,
-    pidfile_name: Option<String>,
+    pidfile_name: Option<OsString>,
     want_chroot: bool,
     want_daemon: bool,
     want_accf: bool,
@@ -210,38 +226,42 @@ impl Server {
         let mut server = Self {
             timeout: Some(Duration::from_secs(30)),
             bindport: if getuid().is_root() { 80 } else { 8080 },
-            index_name: DEFAULT_INDEX_NAME.to_string(),
+            index_name: OsString::from(DEFAULT_INDEX_NAME),
             ..Default::default()
         };
-        // TODO: use std::env::args_os to allow non-UTF-8 filenames
-        let mut args = std::env::args();
+        let mut args = std::env::args_os();
         let name = args.next().expect("expected at least one argument");
         match args.next().as_deref() {
-            None | Some("--help") => {
-                server.usage(&name); // no wwwroot given
-                std::process::exit(0);
-            }
-            Some(wwwroot) => {
-                server.wwwroot = wwwroot.to_string();
+            Some(wwwroot) if wwwroot != "--help" => {
+                let mut wwwroot = wwwroot.as_bytes();
                 // Strip ending slash.
-                if server.wwwroot.ends_with('/') {
-                    server.wwwroot.pop();
+                if wwwroot.ends_with(b"/") {
+                    wwwroot = &wwwroot[0..wwwroot.len() - 1];
                 }
+                server.wwwroot = OsStr::from_bytes(wwwroot).to_os_string();
+            }
+            _ => {
+                // no wwwroot or help flag given
+                server.usage(&name.to_string_lossy());
+                std::process::exit(0);
             }
         };
         while let Some(arg) = args.next().as_deref() {
+            let arg = arg
+                .to_str()
+                .ok_or_else(|| anyhow!("argument is not UTF-8"))?;
             match arg {
                 "--port" => {
-                    let number = args.next().context("missing number after --port")?;
+                    let number = expect_string_after(&mut args, "--port")?;
                     server.bindport = number
                         .parse()
                         .with_context(|| format!("port number {} is invalid", number))?;
                 }
                 "--addr" => {
-                    server.bindaddr = Some(args.next().context("missing ip after --addr")?);
+                    server.bindaddr = Some(expect_string_after(&mut args, "--addr")?);
                 }
                 "--maxconn" => {
-                    let number = args.next().context("missing number after --maxconn")?;
+                    let number = expect_string_after(&mut args, "--maxconn")?;
                     server.max_connections = Some(
                         number
                             .parse()
@@ -255,7 +275,9 @@ impl Server {
                             .append(true)
                             .create(true)
                             .open(&filename)
-                            .with_context(|| format!("failed to open log file {}", filename))?,
+                            .with_context(|| {
+                                format!("failed to open log file {}", filename.to_string_lossy())
+                            })?,
                     ))
                 }
                 "--chroot" => server.want_chroot = true,
@@ -271,12 +293,11 @@ impl Server {
                         .parse_extension_map_file(&OsString::from(filename))?;
                 }
                 "--default-mimetype" => {
-                    server.mime_map.default_mimetype = args
-                        .next()
-                        .context("missing string after --default-mimetype")?;
+                    server.mime_map.default_mimetype =
+                        expect_string_after(&mut args, "--default-mimetype")?;
                 }
                 "--uid" => {
-                    let uid = args.next().context("missing uid after --uid")?;
+                    let uid = expect_string_after(&mut args, "--uid")?;
                     let user1 = User::from_name(&uid).context("getpwnam failed")?;
                     let user2 = uid
                         .parse()
@@ -290,7 +311,7 @@ impl Server {
                     server.drop_uid = Some(user.uid)
                 }
                 "--gid" => {
-                    let gid = args.next().context("missing gid after --gid")?;
+                    let gid = expect_string_after(&mut args, "--gid")?;
                     let group1 = Group::from_name(&gid).context("getgrnam failed")?;
                     let group2 = gid
                         .parse()
@@ -311,17 +332,16 @@ impl Server {
                 "--accf" => server.want_accf = true, // TODO: remove?
                 "--syslog" => server.log_sink = LogSink::Syslog,
                 "--forward" => {
-                    let host = args.next().context("missing host after --forward")?;
-                    let url = args.next().context("missing url after --forward")?;
+                    let host = expect_string_after(&mut args, "--forward")?;
+                    let url = expect_string_after(&mut args, "--forward")?;
                     server.forward_map.insert(host, url);
                 }
                 "--forward-all" => {
-                    server.forward_all_url =
-                        Some(args.next().context("missing url after --forward-all")?)
+                    server.forward_all_url = Some(expect_string_after(&mut args, "--forward-all")?)
                 }
                 "--no-server-id" => server.want_no_server_id = true,
                 "--timeout" => {
-                    let number = args.next().context("missing number after --timeout")?;
+                    let number = expect_string_after(&mut args, "--timeout")?;
                     let timeout_secs = number
                         .parse::<u64>()
                         .with_context(|| format!("timeout number {} is invalid", number))?;
@@ -331,7 +351,7 @@ impl Server {
                     };
                 }
                 "--auth" => {
-                    let user_pass = args.next().context("missing user:pass after --auth")?;
+                    let user_pass = expect_string_after(&mut args, "--auth")?;
                     if !user_pass.contains(':') {
                         return Err(anyhow!("expected user:pass after --auth"));
                     }
@@ -473,11 +493,11 @@ const PIDFILE_MODE: u32 = 0o600;
 
 #[derive(Debug)]
 struct PidFile {
-    name: String,
+    name: OsString,
     file: File,
 }
 impl PidFile {
-    fn create(pidfile_name: String) -> Result<Self> {
+    fn create(pidfile_name: OsString) -> Result<Self> {
         // Create the pidfile, failing if it already exists.
         // Unlike the original darkhttpd, we use O_EXCL instead of O_EXLOCK.
         let mut pidfile_file = OpenOptions::new()
@@ -492,15 +512,22 @@ impl PidFile {
                         Err(e) => e,
                     }
                 } else {
-                    anyhow::Error::new(e)
-                        .context(format!("failed to create pidfile {}", pidfile_name))
+                    anyhow::Error::new(e).context(format!(
+                        "failed to create pidfile {}",
+                        pidfile_name.to_string_lossy()
+                    ))
                 }
             })?;
 
         // Write pid to the pidfile.
         if let Err(e) = write!(pidfile_file, "{}", getpid()) {
             Self::remove_raw(&pidfile_name, pidfile_file).ok();
-            return Err(e).with_context(|| format!("failed to write to pidfile {}", pidfile_name));
+            return Err(e).with_context(|| {
+                format!(
+                    "failed to write to pidfile {}",
+                    pidfile_name.to_string_lossy()
+                )
+            });
         };
 
         Ok(Self {
@@ -508,13 +535,14 @@ impl PidFile {
             file: pidfile_file,
         })
     }
-    fn read(pidfile_name: &str) -> Result<Pid> {
-        let mut pidfile = File::open(pidfile_name)
-            .with_context(|| format!("failed to open pidfile {}", pidfile_name))?;
+    fn read(pidfile_name: &OsStr) -> Result<Pid> {
+        let mut pidfile = File::open(pidfile_name).with_context(|| {
+            format!("failed to open pidfile {}", pidfile_name.to_string_lossy())
+        })?;
         let mut buf = String::new();
-        pidfile
-            .read_to_string(&mut buf)
-            .with_context(|| format!("failed to read pidfile {}", pidfile_name))?;
+        pidfile.read_to_string(&mut buf).with_context(|| {
+            format!("failed to read pidfile {}", pidfile_name.to_string_lossy())
+        })?;
         Ok(Pid::from_raw(
             buf.parse().context("invalid pidfile contents")?,
         ))
@@ -522,9 +550,13 @@ impl PidFile {
     fn remove(self) -> Result<()> {
         Self::remove_raw(&self.name, self.file)
     }
-    fn remove_raw(pidfile_name: &str, pidfile_file: File) -> Result<()> {
-        remove_file(pidfile_name)
-            .with_context(|| format!("failed to remove pidfile {}", pidfile_name))?;
+    fn remove_raw(pidfile_name: &OsStr, pidfile_file: File) -> Result<()> {
+        remove_file(pidfile_name).with_context(|| {
+            format!(
+                "failed to remove pidfile {}",
+                pidfile_name.to_string_lossy()
+            )
+        })?;
         drop(pidfile_file);
         Ok(())
     }
@@ -1345,10 +1377,10 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     // Build path to target file
     let is_directory = decoded_url.ends_with(b"/");
     let mut target = PathBuf::new();
-    target.push(OsStr::new(&server.wwwroot));
+    target.push(&server.wwwroot);
     target.push(OsStr::from_bytes(&decoded_url[1..])); // leading slash removed
     if is_directory {
-        target.push(OsStr::new(&server.index_name));
+        target.push(&server.index_name);
     }
 
     let file = match std::fs::OpenOptions::new()
