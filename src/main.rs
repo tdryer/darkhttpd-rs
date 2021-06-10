@@ -171,7 +171,7 @@ impl LogSink {
                 print!("{}", message);
             }
             Self::Syslog => {
-                let message = CString::new(message).unwrap();
+                let message = CString::new(message).expect("log message contains null byte");
                 unsafe { libc::syslog(libc::LOG_INFO, message.as_c_str().as_ptr()) };
             }
             Self::File(file) => {
@@ -700,7 +700,7 @@ impl Request {
     fn parse(buffer: &[u8]) -> Option<Request> {
         let request = std::str::from_utf8(buffer).ok()?;
         let mut lines = request.lines();
-        let mut request_line = lines.next().unwrap().split(' ');
+        let mut request_line = lines.next()?.split(' ');
         let method = request_line.next()?.to_uppercase();
         let target = RequestTarget::parse(request_line.next()?)?;
         let protocol = request_line.next().map(|s| s.to_uppercase());
@@ -841,7 +841,7 @@ impl Body {
         match self {
             Body::Generated(reply) => {
                 // It's not possible for a generated body to be larger than `usize`.
-                let offset = usize::try_from(offset).unwrap();
+                let offset = usize::try_from(offset).expect("offset is too large");
                 let buf = &reply.as_bytes()[offset..offset + length];
                 socket::send(stream.as_raw_fd(), buf, socket::MsgFlags::empty())
             }
@@ -1037,7 +1037,7 @@ impl<T: AsRef<[u8]>> std::fmt::Display for UrlEncoded<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for byte in self.0.as_ref() {
             if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-                write!(f, "{}", std::char::from_u32(*byte as u32).unwrap())?;
+                write!(f, "{}", *byte as char)?;
             } else {
                 write!(f, "%{:02X}", byte)?;
             }
@@ -1104,8 +1104,9 @@ fn parse_offset(data: &[u8]) -> (Option<i64>, &[u8]) {
     while digits_len < data.len() && data[digits_len].is_ascii_digit() {
         digits_len += 1;
     }
+    // Must be valid UTF-8 because range only contains ASCII digits.
     let offset = std::str::from_utf8(&data[0..digits_len])
-        .unwrap()
+        .expect("offset digits are not valid UTF-8")
         .parse()
         .ok();
     (offset, &data[digits_len..])
@@ -1638,28 +1639,25 @@ fn poll_recv_request(
     assert_eq!(conn.state, ConnectionState::ReceiveRequest);
     // TODO: Write directly to the request buffer
     let mut buf = [0; 1 << 15];
-    let recvd = u64::try_from(
-        match socket::recv(conn.socket.as_raw_fd(), &mut buf, socket::MsgFlags::empty()) {
-            Ok(recvd) if recvd > 0 => recvd,
-            Err(nix::Error::Sys(Errno::EAGAIN)) => {
-                // would block
-                return;
-            }
-            _ => {
-                // closure or other error
-                conn.conn_close = true;
-                conn.state = ConnectionState::Done;
-                return;
-            }
-        },
-    )
-    .unwrap();
+    let recvd = match socket::recv(conn.socket.as_raw_fd(), &mut buf, socket::MsgFlags::empty()) {
+        Ok(recvd) if recvd > 0 => recvd,
+        Err(nix::Error::Sys(Errno::EAGAIN)) => {
+            // would block
+            return;
+        }
+        _ => {
+            // closure or other error
+            conn.conn_close = true;
+            conn.state = ConnectionState::Done;
+            return;
+        }
+    };
     conn.last_active = now;
 
     // append to conn.buffer
     assert!(recvd > 0);
-    conn.buffer.extend(&buf[..recvd.try_into().unwrap()]);
-    stats.total_in += recvd;
+    conn.buffer.extend(&buf[..recvd]);
+    stats.total_in += u64::try_from(recvd).unwrap();
 
     // die if it's too large, or process request if we have all of it
     // TODO: Handle HTTP pipelined requests
