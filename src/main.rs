@@ -212,7 +212,6 @@ struct Server {
     pidfile_name: Option<OsString>,
     want_chroot: bool,
     want_daemon: bool,
-    want_accf: bool,
     want_no_keepalive: bool,
     want_no_server_id: bool,
     server_hdr: String,
@@ -329,7 +328,6 @@ impl Server {
                         Some(args.next().context("missing filename after --pidfile")?);
                 }
                 "--no-keepalive" => server.want_no_keepalive = true,
-                "--accf" => server.want_accf = true, // TODO: remove?
                 "--syslog" => server.log_sink = LogSink::Syslog,
                 "--forward" => {
                     let host = expect_string_after(&mut args, "--forward")?;
