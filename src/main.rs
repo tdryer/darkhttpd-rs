@@ -201,6 +201,7 @@ struct Server {
     forward_map: ForwardMap,
     forward_all_url: Option<String>,
     timeout: Option<Duration>,
+    keep_alive_header: String,
     bindaddr: Option<String>,
     bindport: u16,
     max_connections: Option<usize>,
@@ -362,6 +363,11 @@ impl Server {
                 }
             }
         }
+        server.keep_alive_header = format!(
+            // TODO: Figure out how to handle timeout being disabled while keep-alive is enabled.
+            "Keep-Alive: timeout={}\r\n",
+            server.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
+        );
         Ok(server)
     }
     fn usage(&self, argv0: &str) {
@@ -424,16 +430,10 @@ impl Server {
             self.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
         );
     }
-    fn keep_alive_header(&self, conn_close: bool) -> String {
-        // TODO: Build this string once and reuse it.
-        if conn_close {
-            "Connection: close\r\n".to_string()
-        } else {
-            // TODO: Figure out how to handle timeout being disabled while keep-alive is enabled.
-            format!(
-                "Keep-Alive: timeout={}\r\n",
-                self.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
-            )
+    fn keep_alive_header(&self, conn_close: bool) -> &str {
+        match conn_close {
+            true => "Connection: close\r\n",
+            false => &self.keep_alive_header,
         }
     }
     fn socket_addr(&self) -> Result<SocketAddr, AddrParseError> {
