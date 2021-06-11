@@ -37,6 +37,7 @@ mod test;
 const COPYRIGHT: &str = "copyright (c) 2021 Tom Dryer";
 const DEFAULT_INDEX_NAME: &str = "index.html";
 const DEFAULT_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_MIMETYPES: &str = include_str!("default_mimetypes.txt");
 const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const PATH_DEVNULL: &str = "/dev/null";
@@ -863,30 +864,6 @@ impl Body {
 
 type ForwardMap = HashMap<String, String>;
 
-// TODO: Include this as a file.
-const DEFAULT_EXTENSIONS_MAP: &[&str] = &[
-    "application/ogg         ogg",
-    "application/pdf         pdf",
-    "application/wasm        wasm",
-    "application/xml         xsl xml",
-    "application/xml-dtd     dtd",
-    "application/xslt+xml    xslt",
-    "application/zip         zip",
-    "audio/mpeg              mp2 mp3 mpga",
-    "image/gif               gif",
-    "image/jpeg              jpeg jpe jpg",
-    "image/png               png",
-    "image/svg+xml           svg",
-    "text/css                css",
-    "text/html               html htm",
-    "text/javascript         js",
-    "text/plain              txt asc",
-    "video/mpeg              mpeg mpe mpg",
-    "video/quicktime         qt mov",
-    "video/x-msvideo         avi",
-    "video/mp4               mp4",
-];
-
 #[derive(Debug)]
 struct MimeMap {
     mimetypes: HashMap<OsString, String>,
@@ -938,7 +915,7 @@ impl Default for MimeMap {
             mimetypes: HashMap::new(),
             default_mimetype: DEFAULT_MIME_TYPE.to_string(),
         };
-        for line in DEFAULT_EXTENSIONS_MAP {
+        for line in DEFAULT_MIMETYPES.lines() {
             mime_map.add_mimetype_line(line);
         }
         mime_map
