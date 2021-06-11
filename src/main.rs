@@ -36,7 +36,9 @@ mod test;
 
 const COPYRIGHT: &str = "copyright (c) 2021 Tom Dryer";
 const DEFAULT_INDEX_NAME: &str = "index.html";
+const DEFAULT_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const PATH_DEVNULL: &str = "/dev/null";
 const SENDFILE_SIZE_LIMIT: usize = 1 << 20;
 
@@ -224,7 +226,7 @@ struct Server {
 impl Server {
     fn from_command_line() -> Result<Self> {
         let mut server = Self {
-            timeout: Some(Duration::from_secs(30)),
+            timeout: Some(DEFAULT_TIMEOUT),
             bindport: if getuid().is_root() { 80 } else { 8080 },
             index_name: OsString::from(DEFAULT_INDEX_NAME),
             ..Default::default()
@@ -364,9 +366,11 @@ impl Server {
             }
         }
         server.keep_alive_header = format!(
-            // TODO: Figure out how to handle timeout being disabled while keep-alive is enabled.
             "Keep-Alive: timeout={}\r\n",
-            server.timeout.map(|timeout| timeout.as_secs()).unwrap_or(0)
+            server
+                .timeout
+                .unwrap_or(DEFAULT_KEEP_ALIVE_TIMEOUT)
+                .as_secs()
         );
         Ok(server)
     }

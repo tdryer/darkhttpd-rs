@@ -275,8 +275,11 @@ fn timeout_disabled() {
     let mut stream = server.stream();
     // Delay enough to cause a timeout if zero is not interpreted correctly.
     sleep(Duration::from_millis(10));
-    let response = server.send_stream(&mut stream, Request::new("/")).unwrap();
+    let response = server
+        .send_stream(&mut stream, Request::new("/").with_version("1.1"))
+        .unwrap();
     assert_eq!(response.status(), "200 OK");
+    assert_eq!(response.header("Keep-Alive"), Some("timeout=60"));
 }
 
 #[test]
