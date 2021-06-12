@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::io::{Seek, SeekFrom};
 use std::net::TcpStream;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::io::AsRawFd;
 use std::thread::sleep;
 use std::time::Duration;
@@ -803,4 +803,13 @@ fn request_too_large() {
         .send(Request::new("/").with_header("Data", &data))
         .unwrap();
     assert_eq!(response.status(), "413 Request Entity Too Large");
+}
+
+#[test]
+fn not_a_regular_file() {
+    let server = Server::new();
+    symlink("/dev/null", server.subpath("foo")).unwrap();
+    let response = server.send(Request::new("/foo")).unwrap();
+    assert_eq!(response.status(), "403 Forbidden");
+    assert!(response.text().unwrap().contains("Not a regular file.\n"));
 }

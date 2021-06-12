@@ -1409,7 +1409,6 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         let url = format!("{}/", request.target.path);
         return redirect(server, conn, now, &url);
     } else if !metadata.is_file() {
-        // TODO: Add test coverage
         let reason = "Not a regular file.";
         return default_reply(server, conn, now, 403, "Forbidden", &reason);
     }

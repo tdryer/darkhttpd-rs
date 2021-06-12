@@ -78,18 +78,16 @@ impl Server {
             root,
         }
     }
-    pub fn root(&self) -> &Path {
-        self.root.path()
+    pub fn subpath<P: AsRef<Path>>(&self, name: P) -> PathBuf {
+        [self.root.path(), name.as_ref()].iter().collect()
     }
     pub fn create_dir<P: AsRef<Path>>(&self, name: P) -> PathBuf {
-        let mut path = self.root().to_path_buf();
-        path.push(name);
+        let path = self.subpath(name);
         create_dir(&path).expect("failed to create directory");
         path
     }
     pub fn create_file<P: AsRef<Path>>(&self, name: P) -> File {
-        let mut path = self.root().to_path_buf();
-        path.push(name.as_ref());
+        let path = self.subpath(name);
         File::create(path).expect("failed to create file")
     }
     pub fn stream(&self) -> TcpStream {
