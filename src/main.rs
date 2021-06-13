@@ -1868,8 +1868,6 @@ fn httpd_poll(
                 *files_exhausted = false;
             } else {
                 conn.recycle();
-                // and go right back to recv_request without going through select() again.
-                poll_recv_request(server, conn, now, stats);
                 index += 1;
             }
         } else {
