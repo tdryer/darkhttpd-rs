@@ -1749,6 +1749,12 @@ fn accept_connection(
         .set_nonblocking(true)
         .expect("set_nonblocking failed");
 
+    // Reduce latency by sending data as soon as possible, rather than delaying it to coalesce
+    // small packets. The server avoids doing small writes by buffering in user-space. This greatly
+    // reduces latency for keep-alive requests.
+    // TODO: Use TCP_CORK to avoid putting the headers and body in separate packets?
+    stream.set_nodelay(true).expect("set_nodelay failed");
+
     // Allocate and initialize struct connection.
     let conn = Connection::new(now, stream, addr.ip());
 
