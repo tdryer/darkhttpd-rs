@@ -193,11 +193,10 @@ impl Default for LogSink {
 }
 
 fn expect_string_after(args: &mut std::env::ArgsOs, arg_name: &str) -> Result<String> {
-    Ok(args
-        .next()
+    args.next()
         .with_context(|| format!("missing argument after {}", arg_name))?
         .into_string()
-        .map_err(|_| anyhow!("UTF-8 required after {}", arg_name))?)
+        .map_err(|_| anyhow!("UTF-8 required after {}", arg_name))
 }
 
 #[derive(Debug, Default)]
@@ -292,9 +291,7 @@ impl Server {
                 "--no-listing" => server.no_listing = true,
                 "--mimetypes" => {
                     let filename = args.next().context("missing filename after --mimetypes")?;
-                    server
-                        .mime_map
-                        .parse_extension_map_file(&OsString::from(filename))?;
+                    server.mime_map.parse_extension_map_file(&filename)?;
                 }
                 "--default-mimetype" => {
                     server.mime_map.default_mimetype =
@@ -675,7 +672,7 @@ impl RequestTarget {
     fn parse(buffer: &str) -> Option<RequestTarget> {
         let mut target = buffer.splitn(2, '?');
         let path = target.next()?.to_string();
-        if !path.starts_with("/") {
+        if !path.starts_with('/') {
             return None;
         }
         let query = target.next().unwrap_or("").to_string();
@@ -1357,7 +1354,7 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     let mut decoded_url = url_decode(&request.target.path);
 
     // Make sure URL is safe
-    if let Err(_) = make_safe_url(&mut decoded_url) {
+    if make_safe_url(&mut decoded_url).is_err() {
         let reason = "You requested an invalid URL.".to_string();
         return default_reply(server, conn, now, 400, "Bad Request", &reason);
     }
