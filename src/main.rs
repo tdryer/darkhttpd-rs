@@ -42,6 +42,7 @@ const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const PATH_DEVNULL: &str = "/dev/null";
 const SENDFILE_SIZE_LIMIT: usize = 1 << 20;
+const MAX_REQUEST_LENGTH: usize = 4000;
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -784,7 +785,6 @@ struct Connection {
     client: IpAddr,
     last_active: SystemTime,
     state: ConnectionState,
-    buffer: Vec<u8>,
     request: Option<Request>,
     response: Option<Response>,
     header_sent: usize,
@@ -799,8 +799,7 @@ impl Connection {
             socket: stream,
             client,
             last_active: now,
-            state: ConnectionState::ReceiveRequest,
-            buffer: Vec::new(),
+            state: ConnectionState::receive_request(),
             request: None,
             response: None,
             header_sent: 0,
@@ -813,24 +812,33 @@ impl Connection {
     /// Recycle a finished connection for HTTP/1.1 Keep-Alive.
     fn recycle(&mut self) {
         // don't reset conn.client
-        self.buffer = Vec::new();
         self.request = None;
         self.response = None;
         self.header_sent = 0;
         self.conn_close = true;
         self.reply_sent = 0;
         self.total_sent = 0;
-
-        self.state = ConnectionState::ReceiveRequest; // ready for another
+        self.state = ConnectionState::receive_request(); // ready for another
     }
 }
 
 #[derive(Debug, PartialEq)]
 enum ConnectionState {
-    ReceiveRequest,
+    ReceiveRequest {
+        buffer: Box<[u8; MAX_REQUEST_LENGTH]>,
+        length: usize,
+    },
     SendHeader,
     SendReply,
     Done,
+}
+impl ConnectionState {
+    fn receive_request() -> Self {
+        Self::ReceiveRequest {
+            buffer: Box::new([0; MAX_REQUEST_LENGTH]),
+            length: 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1502,7 +1510,11 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
 
 /// Process a request and return corresponding response.
 fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) -> Response {
-    conn.request = Request::parse(&conn.buffer);
+    let (buffer, length) = match &conn.state {
+        ConnectionState::ReceiveRequest { buffer, length } => (buffer, length),
+        connection_state => panic!("unexpected state: {:?}", connection_state),
+    };
+    conn.request = Request::parse(&buffer[..*length]);
     if let Some(request) = conn.request.as_ref() {
         // cmdline flag can be used to deny keep-alive
         conn.conn_close = request.connection_close() || server.want_no_keepalive;
@@ -1603,10 +1615,6 @@ fn poll_send_header(conn: &mut Connection, now: SystemTime, stats: &mut ServerSt
     }
 }
 
-// To prevent a malformed request from eating up too much memory, die once the request exceeds this
-// many bytes:
-const MAX_REQUEST_LENGTH: usize = 4000;
-
 /// Receiving request.
 fn poll_recv_request(
     server: &mut Server,
@@ -1614,10 +1622,16 @@ fn poll_recv_request(
     now: SystemTime,
     stats: &mut ServerStats,
 ) {
-    assert_eq!(conn.state, ConnectionState::ReceiveRequest);
-    // TODO: Write directly to the request buffer
-    let mut buf = [0; 1 << 15];
-    let recvd = match socket::recv(conn.socket.as_raw_fd(), &mut buf, socket::MsgFlags::empty()) {
+    let (buffer, length) = match &mut conn.state {
+        ConnectionState::ReceiveRequest { buffer, length } => (buffer, length),
+        connection_state => panic!("unexpected state: {:?}", connection_state),
+    };
+
+    let recvd = match socket::recv(
+        conn.socket.as_raw_fd(),
+        &mut buffer[*length..],
+        socket::MsgFlags::empty(),
+    ) {
         Ok(recvd) if recvd > 0 => recvd,
         Err(nix::Error::Sys(Errno::EAGAIN)) => {
             // would block
@@ -1634,25 +1648,22 @@ fn poll_recv_request(
 
     // append to conn.buffer
     assert!(recvd > 0);
-    conn.buffer.extend(&buf[..recvd]);
+    *length += recvd;
     stats.total_in += u64::try_from(recvd).unwrap();
 
-    // die if it's too large, or process request if we have all of it
     // TODO: Handle HTTP pipelined requests
-    if conn.buffer.len() > MAX_REQUEST_LENGTH {
-        let errname = "Request Entity Too Large";
-        let reason = "Your request was dropped because it was too long.";
-        conn.response = Some(default_reply(server, conn, now, 413, errname, reason));
-        conn.buffer = Vec::new(); // request not needed anymore
-        conn.state = ConnectionState::SendHeader;
-    } else if (conn.buffer.len() >= 2
-        && &conn.buffer[conn.buffer.len() - 2..conn.buffer.len()] == b"\n\n")
-        || (conn.buffer.len() >= 4
-            && &conn.buffer[conn.buffer.len() - 4..conn.buffer.len()] == b"\r\n\r\n")
+    if (*length >= 2 && &buffer[*length - 2..*length] == b"\n\n")
+        || (*length >= 4 && &buffer[*length - 4..*length] == b"\r\n\r\n")
     {
         stats.num_requests += 1;
         conn.response = Some(process_request(server, conn, now));
-        conn.buffer = Vec::new(); // request not needed anymore
+        conn.state = ConnectionState::SendHeader;
+    } else if *length == buffer.len() {
+        // Prevent a malformed request from eating up too much memory by rejecting requests larger
+        // than the buffer size.
+        let errname = "Request Entity Too Large";
+        let reason = "Your request was dropped because it was too long.";
+        conn.response = Some(default_reply(server, conn, now, 413, errname, reason));
         conn.state = ConnectionState::SendHeader;
     }
 
@@ -1787,7 +1798,7 @@ fn httpd_poll(
     for conn in connections.iter() {
         match conn.state {
             ConnectionState::Done => {}
-            ConnectionState::ReceiveRequest => {
+            ConnectionState::ReceiveRequest { .. } => {
                 recv_set.insert(conn.socket.as_raw_fd());
                 timeout_required = true;
             }
@@ -1844,7 +1855,7 @@ fn httpd_poll(
         poll_check_timeout(server, conn, now);
 
         match conn.state {
-            ConnectionState::ReceiveRequest => {
+            ConnectionState::ReceiveRequest { .. } => {
                 if recv_set.contains(conn.socket.as_raw_fd()) {
                     poll_recv_request(server, conn, now, stats);
                 }
