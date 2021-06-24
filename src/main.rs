@@ -1,6 +1,6 @@
 use std::cmp::{max, min};
 use std::collections::HashMap;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{remove_file, File, OpenOptions};
 use std::io::{BufRead, BufWriter, Read, Write};
@@ -41,7 +41,7 @@ const DEFAULT_MIMETYPES: &str = include_str!("default_mimetypes.txt");
 const DEFAULT_MIME_TYPE: &str = "application/octet-stream";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const PATH_DEVNULL: &str = "/dev/null";
-const SENDFILE_SIZE_LIMIT: usize = 1 << 20;
+const SENDFILE_SIZE_LIMIT: u64 = 1 << 20;
 const MAX_REQUEST_LENGTH: usize = 4000;
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
@@ -727,7 +727,7 @@ impl Request {
     fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(|s| s.as_str())
     }
-    fn range(&self) -> (Option<i64>, Option<i64>) {
+    fn range(&self) -> (Option<u64>, Option<u64>) {
         // get range header value and strip prefix
         let prefix = "bytes=";
         let range = match self.header("range") {
@@ -773,8 +773,6 @@ struct Response {
     http_code: u16,
     headers: String,
     body: Option<Body>,
-    reply_start: i64,
-    reply_length: i64,
 }
 
 struct Connection {
@@ -786,7 +784,6 @@ struct Connection {
     response: Option<Response>,
     header_sent: usize,
     conn_close: bool,
-    reply_sent: i64,
     total_sent: i64,
 }
 impl Connection {
@@ -801,7 +798,6 @@ impl Connection {
             response: None,
             header_sent: 0,
             conn_close: true,
-            reply_sent: 0,
             total_sent: 0,
         }
     }
@@ -813,7 +809,6 @@ impl Connection {
         self.response = None;
         self.header_sent = 0;
         self.conn_close = true;
-        self.reply_sent = 0;
         self.total_sent = 0;
         self.state = ConnectionState::receive_request(); // ready for another
     }
@@ -838,31 +833,67 @@ impl ConnectionState {
     }
 }
 
-#[derive(Debug)]
 enum Body {
-    Generated(String),
-    FromFile(File),
+    Generated {
+        data: String,
+        start_index: usize,
+        end_index: usize,
+    },
+    FromFile {
+        file: File,
+        offset: i64,
+        length: u64,
+    },
 }
 impl Body {
-    /// Send `length` bytes of body starting from offset `offset`.
-    fn send(&self, stream: &TcpStream, offset: i64, length: usize) -> nix::Result<usize> {
+    fn generated(data: String) -> Self {
+        let data_length = data.as_bytes().len();
+        Self::Generated {
+            data,
+            start_index: 0,
+            end_index: data_length,
+        }
+    }
+    fn poll_send(&mut self, stream: &TcpStream) -> nix::Result<usize> {
         match self {
-            Body::Generated(reply) => {
-                // It's not possible for a generated body to be larger than `usize`.
-                let offset = usize::try_from(offset).expect("offset is too large");
-                let buf = &reply.as_bytes()[offset..offset + length];
-                socket::send(stream.as_raw_fd(), buf, socket::MsgFlags::empty())
-            }
-            Body::FromFile(file) => {
-                let mut offset = offset;
-                let size = min(length, SENDFILE_SIZE_LIMIT); // Limit size per syscall.
-                sendfile64(
+            Self::Generated {
+                data,
+                start_index,
+                end_index,
+            } => {
+                let sent = socket::send(
                     stream.as_raw_fd(),
-                    file.as_raw_fd(),
-                    Some(&mut offset),
-                    size,
-                )
+                    &data.as_bytes()[*start_index..*end_index],
+                    socket::MsgFlags::empty(),
+                )?;
+                *start_index += sent;
+                Ok(sent)
             }
+            Self::FromFile {
+                file,
+                offset,
+                length,
+            } => {
+                let count = usize::try_from(min(*length, SENDFILE_SIZE_LIMIT))
+                    .expect("SENDFILE_SIZE_LIMIT does not fit in usize");
+                let sent = sendfile64(stream.as_raw_fd(), file.as_raw_fd(), Some(offset), count)?;
+                *length -= u64::try_from(sent).expect("sent more data than possible");
+                Ok(sent)
+            }
+        }
+    }
+    fn done_sending(&self) -> bool {
+        match self {
+            Self::Generated {
+                data: _,
+                start_index,
+                end_index,
+            } => start_index == end_index,
+            Self::FromFile {
+                file: _,
+                offset: _,
+                length,
+            } => *length == 0,
         }
     }
 }
@@ -1083,7 +1114,7 @@ impl<'a> std::fmt::Display for HtmlEscaped<'a> {
     }
 }
 
-fn parse_offset(data: &[u8]) -> (Option<i64>, &[u8]) {
+fn parse_offset(data: &[u8]) -> (Option<u64>, &[u8]) {
     let mut digits_len = 0;
     while digits_len < data.len() && data[digits_len].is_ascii_digit() {
         digits_len += 1;
@@ -1118,7 +1149,6 @@ fn default_reply(
         reason,
         GeneratedOn(server, now),
     );
-    let reply_length = reply.as_bytes().len() as i64;
     let headers = format!(
         "HTTP/1.1 {} {}\r\n\
         Date: {}\r\n\
@@ -1134,7 +1164,7 @@ fn default_reply(
         HttpDate(now),
         server.server_hdr,
         server.keep_alive_header(conn.conn_close),
-        reply_length,
+        reply.as_bytes().len(),
         if server.auth_key.is_some() {
             "WWW-Authenticate: Basic realm=\"User Visible Realm\"\r\n"
         } else {
@@ -1144,9 +1174,7 @@ fn default_reply(
     Response {
         http_code: errcode,
         headers,
-        body: Some(Body::Generated(reply)),
-        reply_start: 0,
-        reply_length,
+        body: Some(Body::generated(reply)),
     }
 }
 
@@ -1163,7 +1191,6 @@ fn redirect(server: &Server, conn: &mut Connection, now: SystemTime, location: &
         location,
         GeneratedOn(server, now),
     );
-    let reply_length = reply.as_bytes().len() as i64;
     let headers = format!(
         "HTTP/1.1 301 Moved Permanently\r\n\
         Date: {}\r\n\
@@ -1177,14 +1204,12 @@ fn redirect(server: &Server, conn: &mut Connection, now: SystemTime, location: &
         server.server_hdr,
         location,
         server.keep_alive_header(conn.conn_close),
-        reply_length,
+        reply.as_bytes().len(),
     );
     Response {
         http_code: 301,
         headers,
-        body: Some(Body::Generated(reply)),
-        reply_start: 0,
-        reply_length,
+        body: Some(Body::generated(reply)),
     }
 }
 
@@ -1264,7 +1289,6 @@ fn generate_dir_listing(
         Listing(entries),
         GeneratedOn(server, now),
     );
-    let reply_length = reply.as_bytes().len() as i64;
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
         Date: {}\r\n\
@@ -1277,14 +1301,12 @@ fn generate_dir_listing(
         HttpDate(now),
         server.server_hdr,
         server.keep_alive_header(conn.conn_close),
-        reply_length,
+        reply.as_bytes().len(),
     );
     Response {
         http_code: 200,
         headers,
-        body: Some(Body::Generated(reply)),
-        reply_start: 0,
-        reply_length,
+        body: Some(Body::generated(reply)),
     }
 }
 
@@ -1305,8 +1327,6 @@ fn not_modified(server: &Server, conn: &mut Connection, now: SystemTime) -> Resp
         http_code: 304,
         headers,
         body: None,
-        reply_start: 0,
-        reply_length: 0,
     }
 }
 
@@ -1321,14 +1341,15 @@ fn get_forward_to_url<'a>(server: &'a Server, host: Option<&str>) -> Option<&'a 
 }
 
 /// Return range based on header values and file length.
-fn get_range(request_range: (Option<i64>, Option<i64>), file_len: i64) -> Option<(i64, i64)> {
+fn get_range(request_range: (Option<u64>, Option<u64>), file_len: u64) -> Option<(u64, u64)> {
+    let last = file_len.saturating_sub(1);
     match request_range {
         // eg. 100-200
-        (Some(from), Some(to)) => Some((from, min(to, file_len - 1))),
+        (Some(from), Some(to)) => Some((from, min(to, last))),
         // eg. 100- :: yields 100 to end
-        (Some(from), None) => Some((from, file_len - 1)),
+        (Some(from), None) => Some((from, last)),
         // eg. -200 :: yields last 200
-        (None, Some(to)) => Some((max(file_len - to, 0), file_len - 1)),
+        (None, Some(to)) => Some((file_len.saturating_sub(to), last)),
         (None, None) => None,
     }
 }
@@ -1418,7 +1439,6 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         return default_reply(server, conn, now, 403, "Forbidden", &reason);
     }
 
-    let body = Some(Body::FromFile(file));
     let lastmod = metadata.modified().expect("modified not available");
 
     // handle If-Modified-Since
@@ -1431,9 +1451,10 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
     let mimetype = server.mime_map.content_type(&target);
 
     // handle Range
+    let file_length = metadata.len();
     let request_range = request.range();
-    if let Some((from, to)) = get_range(request_range, metadata.len() as i64) {
-        if from >= metadata.len() as i64 {
+    if let Some((from, to)) = get_range(request_range, file_length) {
+        if from >= file_length {
             let errname = "Requested Range Not Satisfiable";
             let reason = "You requested a range outside of the file.".to_string();
             return default_reply(server, conn, now, 416, errname, &reason);
@@ -1445,8 +1466,14 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
             return default_reply(server, conn, now, 416, errname, &reason);
         }
 
-        let reply_start = from;
         let reply_length = to - from + 1;
+        let body = Body::FromFile {
+            file,
+            // If we somehow have a file larger than `i64::MAX`, offset will become negative, and
+            // sendfile64 will return an error, causing us to close the connection.
+            offset: from as i64,
+            length: reply_length,
+        };
         let headers = format!(
             "HTTP/1.1 206 Partial Content\r\n\
             Date: {}\r\n\
@@ -1462,22 +1489,24 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
             server.server_hdr,
             server.keep_alive_header(conn.conn_close),
             reply_length,
-            reply_start,
+            from,
             to,
-            metadata.len(),
+            file_length,
             mimetype,
             HttpDate(lastmod)
         );
         return Response {
             http_code: 206,
             headers,
-            body,
-            reply_start,
-            reply_length,
+            body: Some(body),
         };
     }
 
-    let reply_length = metadata.len().try_into().unwrap();
+    let body = Body::FromFile {
+        file,
+        offset: 0,
+        length: file_length,
+    };
 
     let headers = format!(
         "HTTP/1.1 200 OK\r\n\
@@ -1492,16 +1521,14 @@ fn process_get(server: &Server, conn: &mut Connection, now: SystemTime) -> Respo
         HttpDate(now),
         server.server_hdr,
         server.keep_alive_header(conn.conn_close),
-        reply_length,
+        file_length,
         mimetype,
         HttpDate(lastmod)
     );
     Response {
         http_code: 200,
         headers,
-        body,
-        reply_start: 0,
-        reply_length,
+        body: Some(body),
     }
 }
 
@@ -1537,15 +1564,11 @@ fn process_request(server: &mut Server, conn: &mut Connection, now: SystemTime) 
 fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerStats) {
     assert!(conn.state == ConnectionState::SendReply);
     let response = conn.response.as_mut().expect("missing response");
-    assert!(response.reply_length >= conn.reply_sent);
+    let body = response.body.as_mut().expect("reply has no body");
 
     conn.last_active = now;
 
-    let offset = response.reply_start + conn.reply_sent;
-    // `i64` may wider than `usize`, so saturate when casting.
-    let send_len = usize::try_from(response.reply_length - conn.reply_sent).unwrap_or(usize::MAX);
-    let body = response.body.as_ref().expect("reply has no body");
-    let sent = match body.send(&conn.socket, offset, send_len) {
+    let sent = match body.poll_send(&conn.socket) {
         Ok(sent) if sent > 0 => sent,
         Err(nix::Error::Sys(Errno::EAGAIN)) => {
             // would block
@@ -1558,12 +1581,9 @@ fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerSta
             return;
         }
     };
-    conn.reply_sent += i64::try_from(sent).unwrap();
     conn.total_sent += i64::try_from(sent).unwrap();
     stats.total_out += u64::try_from(sent).unwrap();
-
-    // check if we're done sending
-    if conn.reply_sent == response.reply_length {
+    if body.done_sending() {
         conn.state = ConnectionState::Done;
     }
 }
