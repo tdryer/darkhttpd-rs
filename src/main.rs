@@ -1068,7 +1068,6 @@ fn url_decode<T: AsRef<[u8]>>(url: T) -> Vec<u8> {
     let mut i = 0;
     while i < url.len() {
         let c = url[i];
-        assert!(c != 0); // TODO: Handle embedded null byte?
         if c == b'%'
             && i + 2 < url.len()
             && url[i + 1].is_ascii_hexdigit()
