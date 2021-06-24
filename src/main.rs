@@ -784,7 +784,7 @@ struct Connection {
     response: Option<Response>,
     header_sent: usize,
     conn_close: bool,
-    total_sent: i64,
+    total_sent: u64,
 }
 impl Connection {
     /// Allocate and initialize an empty connection.
@@ -1581,8 +1581,9 @@ fn poll_send_reply(conn: &mut Connection, now: SystemTime, stats: &mut ServerSta
             return;
         }
     };
-    conn.total_sent += i64::try_from(sent).unwrap();
-    stats.total_out += u64::try_from(sent).unwrap();
+    let sent = sent as u64; // usize shouldn't overflow u64
+    conn.total_sent = conn.total_sent.saturating_add(sent);
+    stats.total_out = stats.total_out.saturating_add(sent);
     if body.done_sending() {
         conn.state = ConnectionState::Done;
     }
@@ -1615,10 +1616,10 @@ fn poll_send_header(conn: &mut Connection, now: SystemTime, stats: &mut ServerSt
         }
     };
 
-    assert!(sent > 0);
     conn.header_sent += sent;
-    conn.total_sent += i64::try_from(sent).unwrap();
-    stats.total_out += u64::try_from(sent).unwrap();
+    let sent = sent as u64; // usize shouldn't overflow u64
+    conn.total_sent = conn.total_sent.saturating_add(sent);
+    stats.total_out = stats.total_out.saturating_add(sent);
 
     // check if we're done sending header
     if conn.header_sent == header.len() {
@@ -1663,10 +1664,9 @@ fn poll_recv_request(
     };
     conn.last_active = now;
 
-    // append to conn.buffer
-    assert!(recvd > 0);
     *length += recvd;
-    stats.total_in += u64::try_from(recvd).unwrap();
+    let recvd = recvd as u64; // usize shouldn't overflow u64
+    stats.total_in = stats.total_in.saturating_add(recvd);
 
     // TODO: Handle HTTP pipelined requests
     if (*length >= 2 && &buffer[*length - 2..*length] == b"\n\n")
