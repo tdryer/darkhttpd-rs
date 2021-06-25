@@ -18,6 +18,8 @@ mod util;
 
 use util::{Request, Server};
 
+// TODO: Figure out why these tests are slightly flaky.
+
 fn test_forward(args: &[&str], url: &str, host: &str, location: &str) {
     let server = Server::with_args(args);
     let response = server
@@ -781,8 +783,7 @@ fn multiple_send() {
     let mut stream = server.stream();
     // Use the client's send buffer size as an estimate of the server's send buffer size. Request
     // twice as much data, to force the server to make multiple send calls.
-    // TODO: Cover more of these cases by running the server in a mode where the send queue is very
-    // small.
+    // TODO: Cover more of these cases by running the server with small send queue.
     let send_buffer_size = getsockopt(stream.as_raw_fd(), sockopt::SndBuf).unwrap();
     let data = get_random_data(send_buffer_size * 2);
     server.create_file("data.jpeg").write_all(&data).unwrap();

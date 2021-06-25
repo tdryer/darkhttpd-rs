@@ -1712,7 +1712,6 @@ impl<'a> std::fmt::Display for LogEncoded<'a> {
 
 /// Add a connection's details to the logfile.
 fn log_connection(server: &mut Server, conn: &Connection, now: SystemTime) {
-    // TODO: Make logging request-oriented?
     let request = match conn.request.as_ref() {
         Some(request) => request,
         None => return, // request was not parsed
@@ -1779,7 +1778,7 @@ fn accept_connection(
     // Reduce latency by sending data as soon as possible, rather than delaying it to coalesce
     // small packets. The server avoids doing small writes by buffering in user-space. This greatly
     // reduces latency for keep-alive requests.
-    // TODO: Use TCP_CORK to avoid putting the headers and body in separate packets?
+    // TODO: Use TCP_CORK to avoid putting the headers and body in separate packets
     stream.set_nodelay(true).expect("set_nodelay failed");
 
     // Allocate and initialize struct connection.

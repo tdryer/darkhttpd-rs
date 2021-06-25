@@ -168,7 +168,6 @@ impl Response {
     pub fn from_reader<R: Read>(reader: &mut R, has_body: bool) -> io::Result<Self> {
         let response_line = Self::read_header(reader)?;
         let headers = Self::read_headers(reader)?;
-        // TODO: Read the body lazily instead of using a flag?
         let body = if has_body {
             headers
                 .get("Content-Length")
