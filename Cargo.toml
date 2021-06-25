@@ -1,5 +1,5 @@
 [package]
-name = "darkhttpd"
+name = "darkhttpd-rs"
 version = "0.1.0"
 authors = ["Tom Dryer <tomdryer.com@gmail.com>"]
 edition = "2018"

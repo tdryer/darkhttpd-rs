@@ -359,7 +359,7 @@ fn test_file_get(path: &str) {
         Some(data.len().to_string().as_str())
     );
     assert_eq!(response.header("Content-Type"), Some("image/jpeg"));
-    assert!(response.header("Server").unwrap().contains("darkhttpd/"));
+    assert!(response.header("Server").unwrap().contains(env!("CARGO_PKG_NAME")));
     assert_eq!(response.body, Some(data));
 }
 

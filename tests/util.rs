@@ -54,7 +54,7 @@ impl Server {
         // Get an unused port. Assumes the port won't be reused before we start darkhttpd.
         let port = get_unused_port().expect("failed to get unused port");
 
-        let child = Command::new(env!("CARGO_BIN_EXE_darkhttpd"))
+        let child = Command::new(env!("CARGO_BIN_EXE_darkhttpd-rs"))
             .args(&[
                 root.path().to_str().expect("path is not valid UTF-8"),
                 "--port",
