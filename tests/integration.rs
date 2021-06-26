@@ -286,12 +286,18 @@ fn timeout_disabled() {
 
 #[test]
 fn maxconn() {
-    let args = &["--maxconn", "1"];
+    let max_connections = 3;
+    let args = &["--maxconn", &max_connections.to_string()];
     let server = Server::with_args(args);
-    // With max connections limited to one, while one connection is open, requests on a second
-    // connection should time out. Both connections are established from the client's perspective,
-    // but the second is actually queued because the server has not accepted it yet.
-    let _stream = server.stream();
+    // Open `max_connections` connections successfully.
+    let mut streams = vec![];
+    for _ in 0 .. max_connections {
+        let mut stream = server.stream();
+        // Send a request to ensure connection is actually accepted by the server.
+        server.send_stream(&mut stream, Request::new("/").with_version("1.1")).unwrap();
+        streams.push(stream);
+    }
+    // Opening an additional connection should time out.
     assert_eq!(
         server.send(Request::new("/")).unwrap_err().kind(),
         io::ErrorKind::WouldBlock

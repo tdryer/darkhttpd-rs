@@ -1805,7 +1805,7 @@ fn httpd_poll(
     let mut timeout_required = false;
 
     let reached_max_connections =
-        matches!(server.max_connections, Some(num) if num >= connections.len());
+        matches!(server.max_connections, Some(max_conn) if connections.len() >= max_conn);
     if !*files_exhausted && !reached_max_connections {
         recv_set.insert(listener.as_raw_fd());
     }
